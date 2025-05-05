@@ -5,7 +5,6 @@ from collections import Counter
 from datetime import datetime
 import time
 import openpyxl
-import matplotlib.pyplot as plt
 from requests.exceptions import SSLError, RequestException
 import numpy as np
 
@@ -71,9 +70,8 @@ page = start_page
 end_page = int(input('종료 페이지 : '))
 
 
-
-baseurl = "https://gall.dcinside.com/mini"
-ID = 'bornin10'
+baseurl = "https://gall.dcinside.com/mgallery"
+ID = 'newconservativeparty'
 middleurl = "/board/lists/?id="+ID
 
 headers = {"User-Agent":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.79 Safari/537.36"}
@@ -104,11 +102,18 @@ while True:
         com = []
         for i in range(len(tr)):
             if tr[i].find('td',{'class':'gall_subject'}).text not in ['공지','고정','설문']:
-                nk = tr[i].find('td',{'class' : 'gall_writer ub-writer'}).text[1:-1]
+                write = tr[i].find('td',{'class' : 'gall_writer ub-writer'})
+                nk = write.text[1:-1]
                 co = int(tr[i].find('td',{'class' : 'gall_count'}).text)
                 ro = int(tr[i].find('td',{'class':'gall_recommend'}).text)
                 rp = tr[i].find('span',{'class':'reply_num'})
                 day.append(tr[i].find('td',{'class' : 'gall_date'}).text)
+                if tr[i].find('span',{'class':'ip'}):
+                    nickname = nk
+                else:
+                    usid = write.get('data-uid')
+                    if nk[:2]=='ㅇㅇ':nickname = nk+'('+usid+')'
+                    else:nickname = nk
                 total[0]+=1
                 total[1]+=co
                 total[2]+=ro
@@ -120,8 +125,8 @@ while True:
                 else:
                     rp=0
 
-                if nk[:2] not in ['ㅇㅇ'] and nk!='익명의팔붕이':
-                    name.append(nk)
+                if nk[:2] not in ['a000000000000'] and nk!='익명의팔붕이':
+                    name.append(nickname)
                     view.append(co)
                     recoms.append(ro)
                     com.append(rp)
@@ -139,7 +144,7 @@ while True:
     times.append(time.time()-start)
     if page%8==0:
         print("\n\n페이지 파싱  중 : %.2f%s\n"%((page-start_page+1)/(end_page-start_page+1)*100,'%'))
-        time.sleep(2)
+        #time.sleep(2)
     if page >= end_page:
         break
     #time.sleep(delay)
@@ -156,18 +161,18 @@ headers = {
     #"Referer": url
 }
 
-baseurl = "https://m.dcinside.com/mini/"+ID+"/" ##미니갤일때
-#baseurl = "https://m.dcinside.com/board/"+ID+"/" ##일반갤일때
+#baseurl = "https://m.dcinside.com/mini/"+ID+"/" ##미니갤일때
+baseurl = "https://m.dcinside.com/board/"+ID+"/" ##일반갤일때
 
 times = []
 count = 1
 
 comment_count = 0
-for i in gall_num:
+for k in gall_num:
     start = time.time()
-    key = baseurl+str(i)
+    key = baseurl+str(k)
     #os.system('cls' if os.name == 'nt' else 'clear')
-    if int(i)%4==0:
+    if int(k)%4==0:
         print("\r글 파싱중 : %s"%(str(round(count/len(gall_num)*100,2))+'%'))
     try:
         response = requests.get(key,headers=headers,timeout=15)
@@ -176,7 +181,14 @@ for i in gall_num:
         comment_count+=len(cmtbox)
         NICK_comments = []
         for i in cmtbox:
-            NICK_comments.append(i.text)
+            f = i.find('span',{'class':'blockCommentId'})
+            if f:
+                usid = f.get('data-info')
+                if i.text =='ㅇㅇ':
+                    NICK_comments.append(i.text+'('+usid+')')
+                else:NICK_comments.append(i.text)
+            else:
+                NICK_comments.append(i.text)
         analyzer.apply_comm_list(NICK_comments)
     except SSLError:
         print("SSL 예외 발생, 건너뜀\n")
@@ -186,6 +198,7 @@ for i in gall_num:
         continue
     except Exception:
         print("예외 발생, 건너뜀\n")
+        print(k)
         continue
     #print(NICK_comments)
     times.append(time.time()-start)
@@ -212,76 +225,65 @@ print("실행시간 %.3f초 (%d초 추가)"%(time.time()-run,2*end_page/8))
 print("페이지당 평균 : %.3f초(%d페이지)"%(avg_page,end_page-start_page+1))
 print("글당 평균 : %.3f초,(%d글)"%(sum(times)/len(times),len(gall_num)))
 
-today_str = datetime.now().strftime("%m.%d")  # 오늘 날짜
 
-# 시간(HH:MM)은 오늘 날짜로 간주
-processed_days = []
-for d in day:
-    if ":" in d:
-        processed_days.append(today_str)
-    else:
-        processed_days.append(d)
+import matplotlib.pyplot as plt
 
-# 날짜별 카운트
+today_str = datetime.now().strftime("%m.%d")
+
+# 시간은 오늘 날짜로 처리
+processed_days = [today_str if ":" in d else d for d in day]
+
+# 카운트 및 필터링
 counter = Counter(processed_days)
+counter = {k: v for k, v in counter.items() if v >= 50}
 
-# 1차 필터링: 50개 이상
-counter = {date: count for date, count in counter.items() if count >= 50}
-
-# 평균 계산
 if counter:
     counts = list(counter.values())
     average = sum(counts) / len(counts)
-
-    # 2차 필터링: 평균의 60% 이상
-    filtered_counter = {
-        date: count for date, count in counter.items()
-        if count >= average * 0.6
-    }
+    filtered_counter = {k: v for k, v in counter.items() if v >= average * 0.6}
 
     if filtered_counter:
-        # 정렬
         dates = sorted(filtered_counter)
         counts = [filtered_counter[d] for d in dates]
         cumulative_counts = np.cumsum(counts)
 
-        # --- 첫 번째: 막대 그래프 ---
-        plt.figure(figsize=(10, 4))
-        bars = plt.bar(dates, counts, color='skyblue', label='Count')
-        plt.axhline(y=average, color='red', linestyle='--', label=f'Average ({average:.1f})')
+        fig, ax1 = plt.subplots(figsize=(10, 5))
 
-        # 막대 위에 수치 표시
+        # 막대 (왼쪽 y축)
+        bars = ax1.bar(dates, counts, color='skyblue', label='Daily')
+        ax1.set_ylabel("Daily Count", color='skyblue')
+        ax1.tick_params(axis='y', labelcolor='skyblue')
+        ax1.axhline(y=average, color='red', linestyle='--', label=f'Average ({average:.1f})')
+
+        # 막대 위 수치 (살짝 왼쪽)
         for bar in bars:
             height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width() / 2, height + 1, f'{int(height)}',
-                     ha='center', va='bottom', fontsize=9)
+            ax1.text(bar.get_x() + bar.get_width() * 0.3, height + 2, f'{int(height)}',
+                     ha='center', va='bottom', fontsize=9, color='blue')
 
-        plt.xlabel("Date (MM.DD)")
-        plt.ylabel("Count")
-        plt.title("Activity Count per Day (Filtered)")
-        plt.xticks(rotation=45)
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
+        # 누적 선 (오른쪽 y축)
+        ax2 = ax1.twinx()
+        ax2.plot(dates, cumulative_counts, marker='o', color='green', label='Cumulative')
+        ax2.set_ylabel("Cumulative Count", color='green')
+        ax2.tick_params(axis='y', labelcolor='green')
 
-        # --- 두 번째: 누적 그래프 ---
-        plt.figure(figsize=(10, 4))
-        plt.plot(dates, cumulative_counts, marker='o', color='green', label='Cumulative Count')
+        # 누적 수치 (살짝 오른쪽)
+        for i, (x, y) in enumerate(zip(dates, cumulative_counts)):
+            offset = 0.35 if i == len(dates) - 1 else 0.15
+            ax2.text(i + offset, y + 5, f'{int(y)}',
+                     ha='center', va='bottom', fontsize=9, color='green')
 
-        # 누적 수치 표시
-        for x, y in zip(dates, cumulative_counts):
-            plt.text(x, y + 2, f'{int(y)}', ha='center', va='bottom', fontsize=9)
+        # 범례
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
 
-        plt.xlabel("Date (MM.DD)")
-        plt.ylabel("Cumulative Count")
-        plt.title("Cumulative Activity Over Time")
-        plt.xticks(rotation=45)
-        plt.grid(True, linestyle='--', alpha=0.5)
-        plt.legend()
+        plt.title("Daily vs. Cumulative Activity (Dual Y-axis)")
+        plt.xticks(ticks=range(len(dates)), labels=dates, rotation=45)
         plt.tight_layout()
         plt.show()
 
     else:
-        print("평균의 60% 이상인 날짜가 없습니다. 그래프를 그릴 수 없습니다.")
+        print("평균의 60% 이상인 날짜가 없습니다.")
 else:
-    print("50개 이상인 날짜가 없습니다. 그래프를 그릴 수 없습니다.")
+    print("50개 이상인 날짜가 없습니다.")

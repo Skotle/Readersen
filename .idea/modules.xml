@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/readersen java.iml" filepath="$PROJECT_DIR$/readersen java.iml" />
+    </modules>
+  </component>
+</project>
+<dependencies>
+<!-- Apache POI core -->
+<dependency>
+  <groupId>org.apache.poi</groupId>
+  <artifactId>poi</artifactId>
+  <version>5.2.5</version>
+</dependency>
+<!-- Apache POI for .xlsx (OOXML) -->
+<dependency>
+  <groupId>org.apache.poi</groupId>
+  <artifactId>poi-ooxml</artifactId>
+  <version>5.2.5</version>
+</dependency>
+</dependencies>

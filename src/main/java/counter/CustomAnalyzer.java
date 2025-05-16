@@ -64,7 +64,6 @@ public class CustomAnalyzer {
     public void printSummary() {
         try{
             FileWriter writer = new FileWriter("user-data.txt");
-            writer.write("이름,글,조회수,추천,리플,댓글\n");
             for (CustomClass c : getClassesSortedByNum()){
                 writer.write(c.name + "SPLIT" + c.num + "SPLIT" + c.view + "SPLIT" + c.recom + "SPLIT" + c.reple + "SPLIT" + c.comm + "\n");
             }
@@ -84,6 +83,17 @@ public class CustomAnalyzer {
                 writer.newLine(); // 줄바꿈
             }
             System.out.println("✅ dates-data.txt 저장 완료");
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+    public void timeprinter(List<String> days) {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter("time-data.txt"))) {
+            for (String day : days) {
+                writer.write(day);
+                writer.newLine();
+            }
+            System.out.println("✅ time-data.txt 저장 완료");
         } catch (IOException e) {
             e.printStackTrace();
         }

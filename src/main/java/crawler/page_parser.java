@@ -1,24 +1,25 @@
 package crawler;
 
+import java.util.ArrayList;
 import org.jsoup.Jsoup;
+import java.util.List;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
-import java.util.ArrayList;
-
 public class page_parser {
-    public static CrawlerResult Crawler(String ID, String Gall, int start, int end) {
+    public static CrawlerResult get(String ID, String Gall, int start, int end) {
         ArrayList<String> skipSubjects = new ArrayList<>();
         skipSubjects.add("고정");
         skipSubjects.add("공지");
         skipSubjects.add("설문");
-        
+
         ArrayList<String> AuthorBox = new ArrayList<>();
         ArrayList<Integer> ViewBox = new ArrayList<>();
         ArrayList<Integer> RecomBox = new ArrayList<>();
         ArrayList<Integer> RepleBox = new ArrayList<>();
         ArrayList<String> RepleTrueBox = new ArrayList<>();
         ArrayList<String> days = new ArrayList<>();
+        ArrayList<String> clocks = new ArrayList<>();
         String baseurl;
         if ("mini".equals(Gall)) {
             baseurl = "https://gall.dcinside.com/mini/board/lists/?id=" + ID;
@@ -35,7 +36,7 @@ public class page_parser {
                         .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                         .header("Accept-Language", "en-US,en;q=0.5")
                         .header("Connection", "keep-alive")
-                        .timeout(2000)
+                        .timeout(800)
                         .get();
                 System.out.println("접속: " + key);
                 Elements tr = doc.select("tr.ub-content");
@@ -48,6 +49,8 @@ public class page_parser {
                         Element reple = tag.selectFirst("span.reply_num");
                         Element geulnum = tag.selectFirst("td.gall_num");
                         Element day = tag.selectFirst("td.gall_date");
+                        String[] clock = day.attr("title").split(" ");
+                        clocks.add(clock[1]);
                         days.add(day.text());
                         String usid = name.attr("data-uid");
                         if (name != null) {
@@ -60,6 +63,7 @@ public class page_parser {
                             ViewBox.add(Integer.parseInt(view.text()));
                             RecomBox.add(Integer.parseInt(recommend.text()));
                             if (reple!=null){
+                                ///System.out.println(reple.text());
                                 RepleTrueBox.add(geulnum.text());
                                 String ra = reple.text();
                                 String repl = "";
@@ -87,6 +91,7 @@ public class page_parser {
                 x-=1;
             }
         }
-        return new CrawlerResult(AuthorBox, ViewBox, RecomBox, RepleBox,RepleTrueBox,days);
+        System.out.println(RecomBox.size());
+        return new CrawlerResult(AuthorBox,ViewBox,RecomBox,RepleBox,RepleTrueBox,days,clocks);
     }
 }

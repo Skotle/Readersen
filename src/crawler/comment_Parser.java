@@ -1,12 +1,10 @@
 package crawler;
 
 import java.util.Arrays;
-
 import java.net.URI;
 import java.net.http.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-
 import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
@@ -15,142 +13,161 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class comment_Parser {
 
     public static subResult geulp(String ID, String TYPE, ArrayList<String> targets, int concurrency) {
+
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
-                .executor(Executors.newFixedThreadPool(concurrency))
                 .build();
 
-        ArrayList<String> allNames = new ArrayList<>();
-        ArrayList<String> allIps = new ArrayList<>();
-        ArrayList<String> allIDs = new ArrayList<>();
+        ConcurrentLinkedQueue<String> allNames = new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<String> allIps = new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<String> allIDs = new ConcurrentLinkedQueue<>();
+
         List<CompletableFuture<Void>> futures = new ArrayList<>();
         ArrayList<Double> pers = new ArrayList<>();
+
         long startTime = System.currentTimeMillis();
+
         AtomicInteger completed = new AtomicInteger(0);
         AtomicInteger totalRetries = new AtomicInteger(0);
         AtomicInteger failedRequests = new AtomicInteger(0);
 
-        int batchSize = 50; // N개 요청마다 슬립
-        long batchSleepMillis = 300; // 0.3초
+        Semaphore semaphore = new Semaphore(concurrency);
 
-        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        int batchSize = 50;
+        long batchSleepMillis = 300;
+
         for (int x = 0; x < targets.size(); x++) {
             final int articleNo = Integer.parseInt(targets.get(x));
 
-            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                int maxRetry = 3;
+            try {
+                semaphore.acquire();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
 
-                for (int attempt = 1; attempt <= maxRetry; attempt++) {
-                    try {
-                        String payload;
-                        String referer;
+            CompletableFuture<Void> future = sendWithRetry(client, ID, TYPE, articleNo, 3, totalRetries, failedRequests)
+                    .thenAccept(response -> {
 
-                        if ("mini".equals(TYPE)) {
-                            payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
-                                    "&focus_cno=&focus_pno=&e_s_n_o=3eabc219ebdd65ff3eef86e54781" +
-                                    "&comment_page=1&sort=R&prevCnt=&board_type=&_GALLTYPE_=MI&secret_article_key=";
-                            referer = "https://gall.dcinside.com/mini/board/view/?id=" + ID + "&no=" + articleNo;
-                        } else if ("m".equals(TYPE)) {
-                            payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
-                                    "&focus_cno=&focus_pno=&e_s_n_o=3eabc219ebdd65ff3eef86e54781" +
-                                    "&comment_page=1&sort=R&prevCnt=&board_type=&_GALLTYPE_=M&secret_article_key=";
-                            referer = "https://gall.dcinside.com/mgallery/board/view/?id=" + ID + "&no=" + articleNo;
-                        } else {
-                            payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
-                                    "&focus_cno=&focus_pno=&e_s_n_o=3eabc219ebdd65ff3eef86e54781" +
-                                    "&comment_page=1&sort=R&prevCnt=&board_type=&_GALLTYPE_=G&secret_article_key=";
-                            referer = "https://gall.dcinside.com/board/view/?id=" + ID + "&no=" + articleNo;
-                        }
+                        List<Map<String, String>> commentData = extractNamesWithInfo(response);
 
-                        HttpRequest request = HttpRequest.newBuilder()
-                                .uri(URI.create("https://gall.dcinside.com/board/comment/"))
-                                .timeout(Duration.ofSeconds(5))
-                                .header("User-Agent", "Mozilla/5.0")
-                                .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-                                .header("X-Requested-With", "XMLHttpRequest")
-                                .header("Referer", referer)
-                                .POST(HttpRequest.BodyPublishers.ofString(payload))
-                                .build();
-
-                        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
-                        List<Map<String, String>> commentData = extractNamesWithInfo(response.body());
-
-                        // 예시: 제외할 이름 배열
                         Set<String> excludeNames = new HashSet<>(Arrays.asList("댓글돌이", "추천제외1", "추천제외2"));
 
-                        synchronized (allNames) {
-                            for (Map<String, String> c : commentData) {
-                                String name = c.get("name");
-                                String uid = c.get("user_id");
-                                String type = c.get("nicktype");
-                                String ip = c.get("ip");
-                                String gallog_icon = c.get("gallog_icon");
-                                // 이름 끝에 숫자가 있는 경우 제거 (uid 앞 숫자는 그대로)
-                                int parenIndex = name.indexOf("(");
-                                String baseName = parenIndex >= 0 ? name.substring(0, parenIndex) : name;
-                                baseName = baseName.replaceAll("\\d+$", ""); // 끝 숫자 제거
-                                String finalName = parenIndex >= 0 ? baseName + name.substring(parenIndex) : baseName;
-                                if (excludeNames.contains(finalName)) continue;
+                        for (Map<String, String> c : commentData) {
+                            String name = c.get("name");
+                            String uid = c.get("user_id");
+                            String type = c.get("nicktype");
+                            String ip = c.get("ip");
 
-                                allNames.add(finalName);
-                                if (ip.equals("")) {
-                                    allIps.add(null);
-                                    allIDs.add(uid);
-                                }
-                                if (uid.equals("")) {
-                                    allIDs.add(null);
-                                    allIps.add(ip);
-                                }
+                            if (excludeNames.contains(name)) continue;
+
+                            String nt = switch (type) {
+                                case "20" -> "고정";
+                                case "00" -> "비고정";
+                                default -> "유동";
+                            };
+
+                            String finalName = nt + name;
+                            allNames.add(finalName);
+
+                            if (ip.equals("")) {
+                                allIps.add(null);
+                                allIDs.add(uid);
+                            } else {
+                                allIDs.add(null);
+                                allIps.add(ip);
                             }
                         }
 
+                        int done = completed.incrementAndGet();
 
+                        if (done % batchSize == 0 || done == targets.size()) {
+                            long elapsedMillis = System.currentTimeMillis() - startTime;
+                            double rpPerSec = done / (elapsedMillis / 1000.0);
 
+                            if ((double) done / targets.size() * 100 > 20) {
+                                pers.add(rpPerSec);
+                            }
 
-                        break; // 성공하면 재시도 종료
+                            System.out.printf("진행: %d/%d 글(%.2f%%), 평균 속도: %.2f r/s\n",
+                                    done, targets.size(),
+                                    (double) done / targets.size() * 100,
+                                    rpPerSec);
 
-                    } catch (Exception e) {
-                        totalRetries.incrementAndGet();
-                        if (attempt == maxRetry) {
-                            failedRequests.incrementAndGet();
-                            System.out.println("글 번호: " + articleNo + " 요청 실패, 스킵됨");
-                        } else {
-                            try { Thread.sleep(1000L * attempt); } catch (InterruptedException ex) { ex.printStackTrace(); }
+                            try { Thread.sleep(batchSleepMillis); } catch (InterruptedException ignored) {}
                         }
-                    }
-                }
 
-                int done = completed.incrementAndGet();
-                if (done % batchSize == 0 || done == targets.size()) {
-                    long elapsedMillis = System.currentTimeMillis() - startTime;
-                    double rpPerSec = done / (elapsedMillis / 1000.0);
-                    if ((double)done/(double)targets.size()*100>20) {
-                        pers.add(rpPerSec);
-                    }
-                    System.out.printf("진행: %d/%d 글(%.2f%s), 평균 속도: %.2f r/s, 남은 시간 %.2f초\n", done, targets.size(),(double)done/(double)targets.size()*100,'%', rpPerSec,(targets.size()-done)/rpPerSec);
-                    // 배치별 잠시 쉬기
-                    try { Thread.sleep(batchSleepMillis); } catch (InterruptedException ignored) {}
-                }
+                        semaphore.release();
 
-            }, executor);
+                    }).exceptionally(e -> {
+                        semaphore.release();
+                        return null;
+                    });
 
             futures.add(future);
         }
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
-        executor.shutdown();
 
         long totalElapsed = System.currentTimeMillis() - startTime;
         double finalRpSec = targets.size() / (totalElapsed / 1000.0);
-        System.out.println("소요: "+(double)totalElapsed/1000+"초");
+
+        System.out.println("소요: " + (double) totalElapsed / 1000 + "초");
         System.out.println("모든 요청 완료, 총 집계: " + allNames.size());
-        System.out.println("\n최대 속도: "+Collections.max(pers)+" r/s");
+
+        System.out.println("\n최대 속도: " + Collections.max(pers) + " r/s");
         System.out.println("평균 속도: " + finalRpSec + " r/s");
-        System.out.println("최저 속도: "+Collections.min(pers)+" r/s\n");
+        System.out.println("최저 속도: " + Collections.min(pers) + " r/s\n");
+
         System.out.println("총 재시도 횟수: " + totalRetries.get());
         System.out.println("총 실패 요청 수: " + failedRequests.get());
 
-        return new subResult(allNames,allIDs,allIps);
+        return new subResult(new ArrayList<>(allNames), new ArrayList<>(allIDs), new ArrayList<>(allIps));
+    }
+
+    private static CompletableFuture<String> sendWithRetry(HttpClient client, String ID, String TYPE, int articleNo,
+                                                           int maxRetry,
+                                                           AtomicInteger totalRetries,
+                                                           AtomicInteger failedRequests) {
+
+        String payload;
+        String referer;
+
+        if ("mini".equals(TYPE)) {
+            payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
+                    "&comment_page=1&_GALLTYPE_=MI";
+            referer = "https://gall.dcinside.com/mini/board/view/?id=" + ID + "&no=" + articleNo;
+        } else if ("m".equals(TYPE)) {
+            payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
+                    "&comment_page=1&_GALLTYPE_=M";
+            referer = "https://gall.dcinside.com/mgallery/board/view/?id=" + ID + "&no=" + articleNo;
+        } else {
+            payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
+                    "&comment_page=1&_GALLTYPE_=G";
+            referer = "https://gall.dcinside.com/board/view/?id=" + ID + "&no=" + articleNo;
+        }
+
+        HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create("https://gall.dcinside.com/board/comment/"))
+                .timeout(Duration.ofSeconds(5))
+                .header("User-Agent", "Mozilla/5.0")
+                .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                .header("X-Requested-With", "XMLHttpRequest")
+                .header("Referer", referer)
+                .POST(HttpRequest.BodyPublishers.ofString(payload))
+                .build();
+
+        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                .thenApply(HttpResponse::body)
+                .exceptionallyCompose(ex -> {
+                    totalRetries.incrementAndGet();
+                    if (maxRetry > 0) {
+                        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
+                        return sendWithRetry(client, ID, TYPE, articleNo, maxRetry - 1, totalRetries, failedRequests);
+                    } else {
+                        failedRequests.incrementAndGet();
+                        return CompletableFuture.completedFuture("");
+                    }
+                });
     }
 
     private static List<Map<String, String>> extractNamesWithInfo(String json) {
@@ -222,4 +239,3 @@ public class comment_Parser {
         }
     }
 }
-

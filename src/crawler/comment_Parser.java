@@ -12,137 +12,141 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 public class comment_Parser {
 
+    // 스케줄러: sleep 대신 논블로킹 지연에 사용
+    private static final ScheduledExecutorService SCHEDULER =
+            Executors.newScheduledThreadPool(1);
+
     public static subResult geulp(String ID, String TYPE, ArrayList<String> targets, int concurrency) {
 
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
+                .executor(Executors.newFixedThreadPool(concurrency))
                 .build();
 
         ConcurrentLinkedQueue<String> allNames = new ConcurrentLinkedQueue<>();
-        ConcurrentLinkedQueue<String> allIps = new ConcurrentLinkedQueue<>();
-        ConcurrentLinkedQueue<String> allIDs = new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<String> allIps   = new ConcurrentLinkedQueue<>();
+        ConcurrentLinkedQueue<String> allIDs   = new ConcurrentLinkedQueue<>();
 
-        List<CompletableFuture<Void>> futures = new ArrayList<>();
-        ArrayList<Double> pers = new ArrayList<>();
+        List<Double> pers = Collections.synchronizedList(new ArrayList<>());
 
         long startTime = System.currentTimeMillis();
 
-        AtomicInteger completed = new AtomicInteger(0);
-        AtomicInteger totalRetries = new AtomicInteger(0);
+        AtomicInteger completed      = new AtomicInteger(0);
+        AtomicInteger totalRetries   = new AtomicInteger(0);
         AtomicInteger failedRequests = new AtomicInteger(0);
 
-        Semaphore semaphore = new Semaphore(concurrency);
-
-        int batchSize = 50;
+        int  batchSize        = 50;
         long batchSleepMillis = 300;
+
+        // Semaphore 제거 → 메인 루프가 블로킹 없이 모든 future 즉시 등록
+        // 동시 요청 수 제한은 HttpClient executor 스레드 수(concurrency)로만 관리
+        List<CompletableFuture<Void>> futures = new ArrayList<>(targets.size());
 
         for (int x = 0; x < targets.size(); x++) {
             final int articleNo = Integer.parseInt(targets.get(x));
 
-            try {
-                semaphore.acquire();
-            } catch (InterruptedException e) {
-                e.printStackTrace();
-            }
+            CompletableFuture<Void> future =
+                    sendWithRetry(client, ID, TYPE, articleNo, 3, totalRetries, failedRequests)
+                            .thenAccept(response -> {
 
-            CompletableFuture<Void> future = sendWithRetry(client, ID, TYPE, articleNo, 3, totalRetries, failedRequests)
-                    .thenAccept(response -> {
+                                List<Map<String, String>> commentData = extractNamesWithInfo(response);
+                                Set<String> excludeNames = new HashSet<>(Arrays.asList("댓글돌이", "추천제외1", "추천제외2"));
 
-                        List<Map<String, String>> commentData = extractNamesWithInfo(response);
+                                for (Map<String, String> c : commentData) {
+                                    String name = c.get("name");
+                                    String uid  = c.get("user_id");
+                                    String type = c.get("nicktype");
+                                    String ip   = c.get("ip");
 
-                        Set<String> excludeNames = new HashSet<>(Arrays.asList("댓글돌이", "추천제외1", "추천제외2"));
+                                    if (excludeNames.contains(name)) continue;
 
-                        for (Map<String, String> c : commentData) {
-                            String name = c.get("name");
-                            String uid = c.get("user_id");
-                            String type = c.get("nicktype");
-                            String ip = c.get("ip");
+                                    String nt = switch (type) {
+                                        case "20" -> "고정";
+                                        case "00" -> "비고정";
+                                        default   -> "유동";
+                                    };
 
-                            if (excludeNames.contains(name)) continue;
+                                    allNames.add(nt + name);
 
-                            String nt = switch (type) {
-                                case "20" -> "고정";
-                                case "00" -> "비고정";
-                                default -> "유동";
-                            };
+                                    if (ip.isEmpty()) {
+                                        allIps.add("");
+                                        allIDs.add(uid);
+                                    } else {
+                                        allIDs.add("");
+                                        allIps.add(ip);
+                                    }
+                                }
 
-                            String finalName = nt + name;
-                            allNames.add(finalName);
+                                int done = completed.incrementAndGet();
 
-                            if (ip.equals("")) {
-                                allIps.add(null);
-                                allIDs.add(uid);
-                            } else {
-                                allIDs.add(null);
-                                allIps.add(ip);
-                            }
-                        }
+                                if (done % batchSize == 0 || done == targets.size()) {
+                                    long   elapsed  = System.currentTimeMillis() - startTime;
+                                    double rpPerSec = done / (elapsed / 1000.0);
+                                    double pct      = (double) done / targets.size() * 100;
 
-                        int done = completed.incrementAndGet();
+                                    if (pct > 20) pers.add(rpPerSec);
 
-                        if (done % batchSize == 0 || done == targets.size()) {
-                            long elapsedMillis = System.currentTimeMillis() - startTime;
-                            double rpPerSec = done / (elapsedMillis / 1000.0);
+                                    double remaining = (targets.size() - done) / rpPerSec;
+                                    System.out.printf("\r진행: %d/%d 글(%.2f%s), 평균 속도: %.2f r/s, 남은 시간 %.2f초",
+                                            done, targets.size(), pct, "%", rpPerSec, remaining);
+                                }
 
-                            if ((double) done / targets.size() * 100 > 20) {
-                                pers.add(rpPerSec);
-                            }
-
-                            System.out.printf("진행: %d/%d 글(%.2f%%), 평균 속도: %.2f r/s\n",
-                                    done, targets.size(),
-                                    (double) done / targets.size() * 100,
-                                    rpPerSec);
-
-                            try { Thread.sleep(batchSleepMillis); } catch (InterruptedException ignored) {}
-                        }
-
-                        semaphore.release();
-
-                    }).exceptionally(e -> {
-                        semaphore.release();
-                        return null;
-                    });
+                            }).exceptionally(e -> null);
 
             futures.add(future);
         }
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        long totalElapsed = System.currentTimeMillis() - startTime;
-        double finalRpSec = targets.size() / (totalElapsed / 1000.0);
+        // 출력 안정화용 슬립 (스레드 블로킹 아닌 메인 스레드에서 한 번만)
+        try { Thread.sleep(batchSleepMillis); } catch (InterruptedException ignored) {}
 
-        System.out.println("소요: " + (double) totalElapsed / 1000 + "초");
+        long   totalElapsed = System.currentTimeMillis() - startTime;
+        double finalRpSec   = targets.size() / (totalElapsed / 1000.0);
+
+        System.out.println("\n소요: " + (double) totalElapsed / 1000 + "초");
         System.out.println("모든 요청 완료, 총 집계: " + allNames.size());
-
-        System.out.println("\n최대 속도: " + Collections.max(pers) + " r/s");
+        System.out.println("\n최대 속도: " + (pers.isEmpty() ? "N/A" : Collections.max(pers)) + " r/s");
         System.out.println("평균 속도: " + finalRpSec + " r/s");
-        System.out.println("최저 속도: " + Collections.min(pers) + " r/s\n");
-
+        System.out.println("최저 속도: " + (pers.isEmpty() ? "N/A" : Collections.min(pers)) + " r/s\n");
         System.out.println("총 재시도 횟수: " + totalRetries.get());
         System.out.println("총 실패 요청 수: " + failedRequests.get());
 
-        return new subResult(new ArrayList<>(allNames), new ArrayList<>(allIDs), new ArrayList<>(allIps));
+        ArrayList<String> resultIDs = new ArrayList<>();
+        ArrayList<String> resultIps = new ArrayList<>();
+        for (String s : allIDs) resultIDs.add(s.isEmpty() ? null : s);
+        for (String s : allIps) resultIps.add(s.isEmpty() ? null : s);
+
+        return new subResult(new ArrayList<>(allNames), resultIDs, resultIps);
     }
 
-    private static CompletableFuture<String> sendWithRetry(HttpClient client, String ID, String TYPE, int articleNo,
-                                                           int maxRetry,
+    // Thread.sleep 대신 논블로킹 지연
+    private static CompletableFuture<Void> delayAsync(long millis) {
+        CompletableFuture<Void> f = new CompletableFuture<>();
+        SCHEDULER.schedule(() -> f.complete(null), millis, TimeUnit.MILLISECONDS);
+        return f;
+    }
+
+    private static CompletableFuture<String> sendWithRetry(HttpClient client, String ID, String TYPE,
+                                                           int articleNo, int maxRetry,
                                                            AtomicInteger totalRetries,
                                                            AtomicInteger failedRequests) {
-
-        String payload;
-        String referer;
+        String payload, referer;
 
         if ("mini".equals(TYPE)) {
             payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
-                    "&comment_page=1&_GALLTYPE_=MI";
+                    "&focus_cno=&focus_pno=&e_s_n_o=2fepbec219ebdd65ff3eef86e54781" +
+                    "&comment_page=1&sort=R&prevCnt=&board_type=&_GALLTYPE_=MI&secret_article_key=";
             referer = "https://gall.dcinside.com/mini/board/view/?id=" + ID + "&no=" + articleNo;
         } else if ("m".equals(TYPE)) {
             payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
-                    "&comment_page=1&_GALLTYPE_=M";
+                    "&focus_cno=&focus_pno=&e_s_n_o=3eabc219ebdd65ff3eef86e54781" +
+                    "&comment_page=1&sort=R&prevCnt=&board_type=&_GALLTYPE_=M&secret_article_key=";
             referer = "https://gall.dcinside.com/mgallery/board/view/?id=" + ID + "&no=" + articleNo;
         } else {
             payload = "id=" + ID + "&no=" + articleNo + "&cmt_id=" + ID + "&cmt_no=" + articleNo +
-                    "&comment_page=1&_GALLTYPE_=G";
+                    "&focus_cno=&focus_pno=&e_s_n_o=3eabc219ebdd65ff3eef86e54781" +
+                    "&comment_page=1&sort=R&prevCnt=&board_type=&_GALLTYPE_=G&secret_article_key=";
             referer = "https://gall.dcinside.com/board/view/?id=" + ID + "&no=" + articleNo;
         }
 
@@ -161,10 +165,15 @@ public class comment_Parser {
                 .exceptionallyCompose(ex -> {
                     totalRetries.incrementAndGet();
                     if (maxRetry > 0) {
-                        try { Thread.sleep(500); } catch (InterruptedException ignored) {}
-                        return sendWithRetry(client, ID, TYPE, articleNo, maxRetry - 1, totalRetries, failedRequests);
+                        // Thread.sleep 대신 논블로킹 지연 (500 / 1000 / 1500ms 점진적 증가)
+                        long delay = 500L * (4 - maxRetry);
+                        return delayAsync(delay)
+                                .thenCompose(ignored ->
+                                        sendWithRetry(client, ID, TYPE, articleNo,
+                                                maxRetry - 1, totalRetries, failedRequests));
                     } else {
                         failedRequests.incrementAndGet();
+                        System.out.println("\n글 번호: " + articleNo + " 요청 실패, 스킵됨");
                         return CompletableFuture.completedFuture("");
                     }
                 });
@@ -180,26 +189,24 @@ public class comment_Parser {
 
             String commentJson = json.substring(idx, endIdx + 1);
 
-            String name = extractValue(commentJson, "\"name\":\"");
-            String userId = extractValue(commentJson, "\"user_id\":\"");
-            String ip = extractValue(commentJson, "\"ip\":\"");
-            String nicktype = extractValue(commentJson, "\"nicktype\":\"");
+            String name       = extractValue(commentJson, "\"name\":\"");
+            String userId     = extractValue(commentJson, "\"user_id\":\"");
+            String ip         = extractValue(commentJson, "\"ip\":\"");
+            String nicktype   = extractValue(commentJson, "\"nicktype\":\"");
             String gallogIcon = extractValue(commentJson, "\"gallog_icon\":\"");
 
-            if (name != null) name = decodeUnicode(name);
-            if (userId == null) userId = "";
-            if (ip == null) ip = "";
-            if (nicktype == null) nicktype = "";
+            if (name       != null) name = decodeUnicode(name);
+            if (userId     == null) userId     = "";
+            if (ip         == null) ip         = "";
+            if (nicktype   == null) nicktype   = "";
             if (gallogIcon == null) gallogIcon = "";
 
-            String imgSrc = extractImgSrc(gallogIcon); // img src 추출
-
             Map<String, String> data = new HashMap<>();
-            data.put("name", name);
-            data.put("user_id", userId);
-            data.put("ip", ip);
-            data.put("nicktype", nicktype);
-            data.put("gallog_icon_src", imgSrc); // src값 저장
+            data.put("name",            name);
+            data.put("user_id",         userId);
+            data.put("ip",              ip);
+            data.put("nicktype",        nicktype);
+            data.put("gallog_icon_src", extractImgSrc(gallogIcon));
 
             result.add(data);
             idx = endIdx + 1;
@@ -207,28 +214,22 @@ public class comment_Parser {
 
         return result;
     }
+
     private static String extractImgSrc(String gallogIcon) {
         if (gallogIcon == null) return "";
         Matcher m = Pattern.compile("img\\s+src=['\"]([^'\"]+)['\"]").matcher(gallogIcon);
-        if (m.find()) {
-            return m.group(1); // src 부분만 반환
-        }
-        return "";
+        return m.find() ? m.group(1) : "";
     }
 
-
-    // key 이후 "..." 형태의 값을 추출
     private static String extractValue(String json, String key) {
         int keyIdx = json.indexOf(key);
         if (keyIdx == -1) return null;
         int start = keyIdx + key.length();
-        int end = json.indexOf("\"", start);
+        int end   = json.indexOf("\"", start);
         if (end == -1) return null;
         return json.substring(start, end);
     }
 
-
-    // 유니코드 디코딩
     private static String decodeUnicode(String input) {
         try {
             Properties p = new Properties();

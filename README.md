@@ -14,7 +14,7 @@
 * 6스레드 185~
 * 8스레드 185+ (리미터 적용)
 
-## 가공
+## 후처리
 
 ```bash
 python ExcelPrinter.py

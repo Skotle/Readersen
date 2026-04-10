@@ -9,23 +9,29 @@ import java.time.Duration;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.net.CookieManager;
+import java.net.CookiePolicy;
 
 public class comment_Parser {
 
-    // 스케줄러: sleep 대신 논블로킹 지연에 사용
     private static final ScheduledExecutorService SCHEDULER =
             Executors.newScheduledThreadPool(1);
 
+    // ✅ 4개 필드를 하나의 객체로 묶어 atomic하게 관리
+    private record CommentEntry(String name, String uid, String ip, String date) {}
+
     public static subResult geulp(String ID, String TYPE, ArrayList<String> targets, int concurrency) {
+
+        CookieManager cookieManager = new CookieManager();
+        cookieManager.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
 
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
-                .executor(Executors.newFixedThreadPool(concurrency))
+                .cookieHandler(cookieManager)
                 .build();
 
-        ConcurrentLinkedQueue<String> allNames = new ConcurrentLinkedQueue<>();
-        ConcurrentLinkedQueue<String> allIps   = new ConcurrentLinkedQueue<>();
-        ConcurrentLinkedQueue<String> allIDs   = new ConcurrentLinkedQueue<>();
+        // ✅ 4개 큐 → 단일 ConcurrentLinkedQueue<CommentEntry>
+        ConcurrentLinkedQueue<CommentEntry> allComments = new ConcurrentLinkedQueue<>();
 
         List<Double> pers = Collections.synchronizedList(new ArrayList<>());
 
@@ -35,92 +41,131 @@ public class comment_Parser {
         AtomicInteger totalRetries   = new AtomicInteger(0);
         AtomicInteger failedRequests = new AtomicInteger(0);
 
-        int  batchSize        = 50;
-        long batchSleepMillis = 300;
+        Semaphore semaphore = new Semaphore(concurrency);
 
-        // Semaphore 제거 → 메인 루프가 블로킹 없이 모든 future 즉시 등록
-        // 동시 요청 수 제한은 HttpClient executor 스레드 수(concurrency)로만 관리
-        List<CompletableFuture<Void>> futures = new ArrayList<>(targets.size());
+        ThreadLocal<SimpleRateLimiter> threadLimiter =
+                ThreadLocal.withInitial(() -> new SimpleRateLimiter(30 + Math.random() * 15));
 
-        for (int x = 0; x < targets.size(); x++) {
-            final int articleNo = Integer.parseInt(targets.get(x));
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
 
-            CompletableFuture<Void> future =
-                    sendWithRetry(client, ID, TYPE, articleNo, 3, totalRetries, failedRequests)
-                            .thenAccept(response -> {
+        for (String target : targets) {
+            int articleNo = Integer.parseInt(target);
 
-                                List<Map<String, String>> commentData = extractNamesWithInfo(response);
-                                Set<String> excludeNames = new HashSet<>(Arrays.asList("댓글돌이", "추천제외1", "추천제외2"));
+            CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
 
-                                for (Map<String, String> c : commentData) {
-                                    String name = c.get("name");
-                                    String uid  = c.get("user_id");
-                                    String type = c.get("nicktype");
-                                    String ip   = c.get("ip");
+                try {
+                    semaphore.acquire();
+                    threadLimiter.get().acquire();
 
-                                    if (excludeNames.contains(name)) continue;
+                    CompletableFuture<Void> f =
+                            sendWithRetry(client, ID, TYPE, articleNo, 3,
+                                    totalRetries, failedRequests)
+                                    .thenAccept(response -> {
 
-                                    String nt = switch (type) {
-                                        case "20" -> "고정";
-                                        case "00" -> "비고정";
-                                        default   -> "유동";
-                                    };
+                                        List<Map<String, String>> commentData =
+                                                extractNamesWithInfo(response);
+                                        Set<String> excludeNames = new HashSet<>(
+                                                Arrays.asList("댓글돌이", "추천제외1", "추천제외2")
+                                        );
 
-                                    allNames.add(nt + name);
+                                        for (Map<String, String> c : commentData) {
 
-                                    if (ip.isEmpty()) {
-                                        allIps.add("");
-                                        allIDs.add(uid);
-                                    } else {
-                                        allIDs.add("");
-                                        allIps.add(ip);
-                                    }
-                                }
+                                            String name = c.get("name");
+                                            String uid  = c.get("user_id");
+                                            String type = c.get("nicktype");
+                                            String ip   = c.get("ip");
+                                            String date = c.get("reg_date");
 
-                                int done = completed.incrementAndGet();
+                                            if (name == null) name = "";
+                                            if (date == null) date = "";
 
-                                if (done % batchSize == 0 || done == targets.size()) {
-                                    long   elapsed  = System.currentTimeMillis() - startTime;
-                                    double rpPerSec = done / (elapsed / 1000.0);
-                                    double pct      = (double) done / targets.size() * 100;
+                                            if (excludeNames.contains(name)) continue;
 
-                                    if (pct > 20) pers.add(rpPerSec);
+                                            String nt = switch (type) {
+                                                case "20" -> "고정";
+                                                case "00" -> "비고정";
+                                                default   -> "유동";
+                                            };
 
-                                    double remaining = (targets.size() - done) / rpPerSec;
-                                    System.out.printf("\r진행: %d/%d 글(%.2f%s), 평균 속도: %.2f r/s, 남은 시간 %.2f초",
-                                            done, targets.size(), pct, "%", rpPerSec, remaining);
-                                }
+                                            // ✅ 4개를 하나의 객체로 원자적으로 추가 → 사이즈 불일치 불가
+                                            allComments.add(new CommentEntry(
+                                                    nt + name,
+                                                    uid,
+                                                    ip,
+                                                    normalizeDate(date)
+                                            ));
+                                        }
 
-                            }).exceptionally(e -> null);
+                                        int done = completed.incrementAndGet();
+
+                                        if (done % 50 == 0 || done == targets.size()) {
+                                            long elapsed = System.currentTimeMillis() - startTime;
+                                            double rps = done / (elapsed / 1000.0);
+                                            double pct = (double) done / targets.size() * 100;
+
+                                            if (pct > 20) pers.add(rps);
+
+                                            double remaining = (targets.size() - done) / rps;
+
+                                            System.out.printf(
+                                                    "\r진행: %d/%d (%.2f%%), %.2f r/s, 남은 %d초",
+                                                    done, targets.size(), pct, rps, (int) remaining
+                                            );
+                                        }
+
+                                    });
+
+                    futures.add(f);
+
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } finally {
+                    semaphore.release();
+                }
+
+            });
 
             futures.add(future);
         }
 
         CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
 
-        // 출력 안정화용 슬립 (스레드 블로킹 아닌 메인 스레드에서 한 번만)
-        try { Thread.sleep(batchSleepMillis); } catch (InterruptedException ignored) {}
-
-        long   totalElapsed = System.currentTimeMillis() - startTime;
-        double finalRpSec   = targets.size() / (totalElapsed / 1000.0);
+        long totalElapsed = System.currentTimeMillis() - startTime;
+        double finalRpSec = targets.size() / (totalElapsed / 1000.0);
 
         System.out.println("\n소요: " + (double) totalElapsed / 1000 + "초");
-        System.out.println("모든 요청 완료, 총 집계: " + allNames.size());
-        System.out.println("\n최대 속도: " + (pers.isEmpty() ? "N/A" : Collections.max(pers)) + " r/s");
+        System.out.println("모든 요청 완료, 총 집계: " + allComments.size());
+
+        List<Double> snapshot;
+        synchronized (pers) {
+            snapshot = new ArrayList<>(pers);
+        }
+
+        double max = snapshot.isEmpty() ? Double.NaN : Collections.max(snapshot);
+        double min = snapshot.isEmpty() ? Double.NaN : Collections.min(snapshot);
+
+        System.out.println("\n최대 속도: " + (Double.isNaN(max) ? "N/A" : max) + " r/s");
         System.out.println("평균 속도: " + finalRpSec + " r/s");
-        System.out.println("최저 속도: " + (pers.isEmpty() ? "N/A" : Collections.min(pers)) + " r/s\n");
+        System.out.println("최저 속도: " + (Double.isNaN(min) ? "N/A" : min) + " r/s\n");
         System.out.println("총 재시도 횟수: " + totalRetries.get());
         System.out.println("총 실패 요청 수: " + failedRequests.get());
 
-        ArrayList<String> resultIDs = new ArrayList<>();
-        ArrayList<String> resultIps = new ArrayList<>();
-        for (String s : allIDs) resultIDs.add(s.isEmpty() ? null : s);
-        for (String s : allIps) resultIps.add(s.isEmpty() ? null : s);
+        // ✅ 단일 루프로 4개 리스트 동시 구성 → 항상 같은 사이즈 보장
+        ArrayList<String> resultNames = new ArrayList<>();
+        ArrayList<String> resultIDs   = new ArrayList<>();
+        ArrayList<String> resultIps   = new ArrayList<>();
+        ArrayList<String> resultDays  = new ArrayList<>();
 
-        return new subResult(new ArrayList<>(allNames), resultIDs, resultIps);
+        for (CommentEntry e : allComments) {
+            resultNames.add(e.name());
+            resultIDs.add(e.uid().isEmpty()  ? null : e.uid());
+            resultIps.add(e.ip().isEmpty()   ? null : e.ip());
+            resultDays.add(e.date());
+        }
+
+        return new subResult(resultNames, resultIDs, resultIps, resultDays);
     }
 
-    // Thread.sleep 대신 논블로킹 지연
     private static CompletableFuture<Void> delayAsync(long millis) {
         CompletableFuture<Void> f = new CompletableFuture<>();
         SCHEDULER.schedule(() -> f.complete(null), millis, TimeUnit.MILLISECONDS);
@@ -165,7 +210,6 @@ public class comment_Parser {
                 .exceptionallyCompose(ex -> {
                     totalRetries.incrementAndGet();
                     if (maxRetry > 0) {
-                        // Thread.sleep 대신 논블로킹 지연 (500 / 1000 / 1500ms 점진적 증가)
                         long delay = 500L * (4 - maxRetry);
                         return delayAsync(delay)
                                 .thenCompose(ignored ->
@@ -186,39 +230,31 @@ public class comment_Parser {
         while ((idx = json.indexOf("{\"no\":", idx)) != -1) {
             int endIdx = json.indexOf("}", idx);
             if (endIdx == -1) break;
-
             String commentJson = json.substring(idx, endIdx + 1);
 
-            String name       = extractValue(commentJson, "\"name\":\"");
-            String userId     = extractValue(commentJson, "\"user_id\":\"");
-            String ip         = extractValue(commentJson, "\"ip\":\"");
-            String nicktype   = extractValue(commentJson, "\"nicktype\":\"");
-            String gallogIcon = extractValue(commentJson, "\"gallog_icon\":\"");
+            String name     = extractValue(commentJson, "\"name\":\"");
+            String userId   = extractValue(commentJson, "\"user_id\":\"");
+            String ip       = extractValue(commentJson, "\"ip\":\"");
+            String nicktype = extractValue(commentJson, "\"nicktype\":\"");
+            String datedata = extractValue(commentJson, "\"reg_date\":\"");
 
-            if (name       != null) name = decodeUnicode(name);
-            if (userId     == null) userId     = "";
-            if (ip         == null) ip         = "";
-            if (nicktype   == null) nicktype   = "";
-            if (gallogIcon == null) gallogIcon = "";
+            if (name != null) name = decodeUnicode(name);
+            if (userId == null) userId = "";
+            if (ip == null) ip = "";
+            if (nicktype == null) nicktype = "";
 
             Map<String, String> data = new HashMap<>();
-            data.put("name",            name);
-            data.put("user_id",         userId);
-            data.put("ip",              ip);
-            data.put("nicktype",        nicktype);
-            data.put("gallog_icon_src", extractImgSrc(gallogIcon));
+            data.put("name", name);
+            data.put("user_id", userId);
+            data.put("ip", ip);
+            data.put("nicktype", nicktype);
+            data.put("reg_date", datedata);
 
             result.add(data);
             idx = endIdx + 1;
         }
 
         return result;
-    }
-
-    private static String extractImgSrc(String gallogIcon) {
-        if (gallogIcon == null) return "";
-        Matcher m = Pattern.compile("img\\s+src=['\"]([^'\"]+)['\"]").matcher(gallogIcon);
-        return m.find() ? m.group(1) : "";
     }
 
     private static String extractValue(String json, String key) {
@@ -238,5 +274,51 @@ public class comment_Parser {
         } catch (Exception e) {
             return input;
         }
+    }
+
+    private static String normalizeDate(String date) {
+        if (date == null || date.isEmpty()) return null;
+
+        // 이미 정규화된 형식
+        if (date.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}")) return date;
+
+        try {
+            // "03.23 00:11:58" 형식 — 년도 없음
+            if (date.matches("\\d{2}\\.\\d{2} \\d{2}:\\d{2}:\\d{2}")) {
+                int currentYear  = java.time.LocalDate.now().getYear();
+                int currentMonth = java.time.LocalDate.now().getMonthValue();
+                int month = Integer.parseInt(date.substring(0, 2));
+                // 월이 현재보다 크면 작년 데이터
+                int year = (month > currentMonth) ? currentYear - 1 : currentYear;
+                String normalized = year + "-" + date.replace(".", "-").replaceFirst("-", "-");
+                return java.time.LocalDateTime.parse(
+                        normalized.trim(),
+                        java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+                ).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+            }
+
+            // 기타 패턴
+            List<String> patterns = List.of(
+                    "yyyy-MM-dd HH:mm:ss",
+                    "yyyy.MM.dd HH:mm:ss",
+                    "yyyy/MM/dd HH:mm:ss",
+                    "yyyy-MM-dd HH:mm",
+                    "yyyy.MM.dd HH:mm"
+            );
+
+            for (String pattern : patterns) {
+                try {
+                    return java.time.LocalDateTime.parse(
+                            date.trim(),
+                            java.time.format.DateTimeFormatter.ofPattern(pattern)
+                    ).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
+                } catch (Exception ignored) {}
+            }
+
+        } catch (Exception e) {
+            System.out.println("날짜 파싱 실패: " + date);
+        }
+
+        return null;
     }
 }

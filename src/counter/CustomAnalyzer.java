@@ -141,8 +141,8 @@ public class CustomAnalyzer {
     }
 
     // 기존의 날짜/시간 저장 기능 유지
-    public void dayprinter(List<String> days) {
-        try (BufferedWriter writer = new BufferedWriter(new FileWriter("date-data.txt"))) {
+    public void dayprinter(List<String> days,String filename) {
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename))) {
             for (String day : days) { writer.write(day); writer.newLine(); }
         } catch (IOException e) { e.printStackTrace(); }
     }
@@ -153,6 +153,7 @@ public class CustomAnalyzer {
         } catch (IOException e) { e.printStackTrace(); }
     }
     public void saveUserLog(ArrayList<String> names, ArrayList<String> userIDs, ArrayList<String> ips, List<String> days, String filename) {
+        System.out.println(names.size()+" "+userIDs.size()+" "+ips.size()+" "+days.size());
         if (names == null || days == null || names.size() != days.size()) {
             System.out.println("데이터의 길이가 일치하지 않거나 비어있습니다.");
             return;

@@ -141,12 +141,11 @@ public class CustomAnalyzer {
     }
 
     // 기존의 날짜/시간 저장 기능 유지
-    public void dayprinter(List<String> days,String filename) {
+    public void textprinter(List<String> days,String filename) {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename))) {
             for (String day : days) { writer.write(day); writer.newLine(); }
         } catch (IOException e) { e.printStackTrace(); }
     }
-
     public void timeprinter(List<String> times) {
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("time-data.txt"))) {
             for (String t : times) { writer.write(t); writer.newLine(); }

@@ -1,24 +1,39 @@
 package crawler;
 
-import java.util.Arrays;
-import java.net.URI;
-import java.net.http.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
-import java.time.Duration;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.net.CookieManager;
 import java.net.CookiePolicy;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class comment_Parser {
+    private static final int MAX_COMMENT_CONCURRENCY = 30;
+    private static final int BLOCK_COOLDOWN_BASE_MS = 5000;
+    private static volatile long globalCooldownUntil = 0L;
 
     private static final ScheduledExecutorService SCHEDULER =
             Executors.newScheduledThreadPool(1);
 
-    // ✅ 4개 필드를 하나의 객체로 묶어 atomic하게 관리
-    private record CommentEntry(String name, String uid, String ip, String date) {}
+    private record CommentEntry(String name, String uid, String ip, String date, String memo) {}
 
     public static subResult geulp(String ID, String TYPE, ArrayList<String> targets, int concurrency) {
 
@@ -30,18 +45,17 @@ public class comment_Parser {
                 .cookieHandler(cookieManager)
                 .build();
 
-        // ✅ 4개 큐 → 단일 ConcurrentLinkedQueue<CommentEntry>
         ConcurrentLinkedQueue<CommentEntry> allComments = new ConcurrentLinkedQueue<>();
-
         List<Double> pers = Collections.synchronizedList(new ArrayList<>());
 
         long startTime = System.currentTimeMillis();
 
-        AtomicInteger completed      = new AtomicInteger(0);
-        AtomicInteger totalRetries   = new AtomicInteger(0);
+        AtomicInteger completed = new AtomicInteger(0);
+        AtomicInteger totalRetries = new AtomicInteger(0);
         AtomicInteger failedRequests = new AtomicInteger(0);
 
-        Semaphore semaphore = new Semaphore(concurrency);
+        int effectiveConcurrency = Math.max(1, Math.min(concurrency, MAX_COMMENT_CONCURRENCY));
+        Semaphore semaphore = new Semaphore(effectiveConcurrency);
 
         ThreadLocal<SimpleRateLimiter> threadLimiter =
                 ThreadLocal.withInitial(() -> new SimpleRateLimiter(30 + Math.random() * 15));
@@ -55,6 +69,8 @@ public class comment_Parser {
 
                 try {
                     semaphore.acquire();
+                    waitGlobalCooldown();
+                    Thread.sleep(ThreadLocalRandom.current().nextInt(100, 401));
                     threadLimiter.get().acquire();
 
                     CompletableFuture<Void> f =
@@ -71,28 +87,30 @@ public class comment_Parser {
                                         for (Map<String, String> c : commentData) {
 
                                             String name = c.get("name");
-                                            String uid  = c.get("user_id");
+                                            String uid = c.get("user_id");
                                             String type = c.get("nicktype");
-                                            String ip   = c.get("ip");
+                                            String ip = c.get("ip");
                                             String date = c.get("reg_date");
+                                            String content = c.get("content");
 
                                             if (name == null) name = "";
                                             if (date == null) date = "";
+                                            if (content == null) content = "";
 
                                             if (excludeNames.contains(name)) continue;
 
                                             String nt = switch (type) {
                                                 case "20" -> "고정";
                                                 case "00" -> "비고정";
-                                                default   -> "유동";
+                                                default -> "유동";
                                             };
 
-                                            // ✅ 4개를 하나의 객체로 원자적으로 추가 → 사이즈 불일치 불가
                                             allComments.add(new CommentEntry(
                                                     nt + name,
                                                     uid,
                                                     ip,
-                                                    normalizeDate(date)
+                                                    normalizeDate(date),
+                                                    content
                                             ));
                                         }
 
@@ -150,26 +168,64 @@ public class comment_Parser {
         System.out.println("총 재시도 횟수: " + totalRetries.get());
         System.out.println("총 실패 요청 수: " + failedRequests.get());
 
-        // ✅ 단일 루프로 4개 리스트 동시 구성 → 항상 같은 사이즈 보장
         ArrayList<String> resultNames = new ArrayList<>();
-        ArrayList<String> resultIDs   = new ArrayList<>();
-        ArrayList<String> resultIps   = new ArrayList<>();
-        ArrayList<String> resultDays  = new ArrayList<>();
+        ArrayList<String> resultIDs = new ArrayList<>();
+        ArrayList<String> resultIps = new ArrayList<>();
+        ArrayList<String> resultDays = new ArrayList<>();
+        ArrayList<String> resultContents = new ArrayList<>();
 
         for (CommentEntry e : allComments) {
             resultNames.add(e.name());
-            resultIDs.add(e.uid().isEmpty()  ? null : e.uid());
-            resultIps.add(e.ip().isEmpty()   ? null : e.ip());
+            resultIDs.add(e.uid().isEmpty() ? null : e.uid());
+            resultIps.add(e.ip().isEmpty() ? null : e.ip());
             resultDays.add(e.date());
+            resultContents.add(e.memo());
         }
 
-        return new subResult(resultNames, resultIDs, resultIps, resultDays);
+        return new subResult(resultNames, resultIDs, resultIps, resultDays, resultContents);
     }
 
     private static CompletableFuture<Void> delayAsync(long millis) {
         CompletableFuture<Void> f = new CompletableFuture<>();
         SCHEDULER.schedule(() -> f.complete(null), millis, TimeUnit.MILLISECONDS);
         return f;
+    }
+
+    private static void waitGlobalCooldown() throws InterruptedException {
+        long wait = globalCooldownUntil - System.currentTimeMillis();
+        if (wait > 0) {
+            Thread.sleep(wait);
+        }
+    }
+
+    private static CompletableFuture<Void> waitGlobalCooldownAsync() {
+        long wait = globalCooldownUntil - System.currentTimeMillis();
+        if (wait <= 0) {
+            return CompletableFuture.completedFuture(null);
+        }
+        return delayAsync(wait);
+    }
+
+    private static void applyGlobalCooldown(long millis) {
+        long jitter = ThreadLocalRandom.current().nextLong(1000, 4001);
+        long until = System.currentTimeMillis() + millis + jitter;
+        globalCooldownUntil = Math.max(globalCooldownUntil, until);
+        System.out.println("\n[차단 방지] 댓글 요청 쿨다운 " + ((millis + jitter) / 1000) + "초");
+    }
+
+    private static long getRetryDelayMillis(HttpResponse<?> response, long fallbackMillis) {
+        return response.headers()
+                .firstValue("Retry-After")
+                .map(value -> parseRetryAfterMillis(value, fallbackMillis))
+                .orElse(fallbackMillis);
+    }
+
+    private static long parseRetryAfterMillis(String value, long fallbackMillis) {
+        try {
+            return Math.max(1000L, Long.parseLong(value.trim()) * 1000L);
+        } catch (NumberFormatException e) {
+            return fallbackMillis;
+        }
     }
 
     private static CompletableFuture<String> sendWithRetry(HttpClient client, String ID, String TYPE,
@@ -205,8 +261,28 @@ public class comment_Parser {
                 .POST(HttpRequest.BodyPublishers.ofString(payload))
                 .build();
 
-        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                .thenApply(HttpResponse::body)
+        return waitGlobalCooldownAsync()
+                .thenCompose(ignored -> client.sendAsync(request, HttpResponse.BodyHandlers.ofString()))
+                .thenCompose(response -> {
+                    int status = response.statusCode();
+                    if (status == 403 || status == 429 || status == 503) {
+                        totalRetries.incrementAndGet();
+                        if (maxRetry > 0) {
+                            long delay = getRetryDelayMillis(response, 500L * (4 - maxRetry));
+                            applyGlobalCooldown(delay);
+                            return delayAsync(delay)
+                                    .thenCompose(ignored ->
+                                            sendWithRetry(client, ID, TYPE, articleNo,
+                                                    maxRetry - 1, totalRetries, failedRequests));
+                        }
+
+                        failedRequests.incrementAndGet();
+                        System.out.println("\n글 번호: " + articleNo + " 차단성 응답(" + status + "), 스킵됨");
+                        return CompletableFuture.completedFuture("");
+                    }
+
+                    return CompletableFuture.completedFuture(response.body());
+                })
                 .exceptionallyCompose(ex -> {
                     totalRetries.incrementAndGet();
                     if (maxRetry > 0) {
@@ -232,16 +308,18 @@ public class comment_Parser {
             if (endIdx == -1) break;
             String commentJson = json.substring(idx, endIdx + 1);
 
-            String name     = extractValue(commentJson, "\"name\":\"");
-            String userId   = extractValue(commentJson, "\"user_id\":\"");
-            String ip       = extractValue(commentJson, "\"ip\":\"");
+            String name = extractValue(commentJson, "\"name\":\"");
+            String userId = extractValue(commentJson, "\"user_id\":\"");
+            String ip = extractValue(commentJson, "\"ip\":\"");
             String nicktype = extractValue(commentJson, "\"nicktype\":\"");
             String datedata = extractValue(commentJson, "\"reg_date\":\"");
+            String content = normalizeContent(extractValue(commentJson, "\"memo\":\""));
 
             if (name != null) name = decodeUnicode(name);
             if (userId == null) userId = "";
             if (ip == null) ip = "";
             if (nicktype == null) nicktype = "";
+            if (content == null) content = "";
 
             Map<String, String> data = new HashMap<>();
             data.put("name", name);
@@ -249,6 +327,7 @@ public class comment_Parser {
             data.put("ip", ip);
             data.put("nicktype", nicktype);
             data.put("reg_date", datedata);
+            data.put("content", content);
 
             result.add(data);
             idx = endIdx + 1;
@@ -261,9 +340,23 @@ public class comment_Parser {
         int keyIdx = json.indexOf(key);
         if (keyIdx == -1) return null;
         int start = keyIdx + key.length();
-        int end   = json.indexOf("\"", start);
+        int end = json.indexOf("\"", start);
         if (end == -1) return null;
         return json.substring(start, end);
+    }
+
+    private static String normalizeContent(String content) {
+        if (content == null || content.isEmpty()) return "";
+
+        content = decodeUnicode(content);
+        content = content.replaceAll("<[^>]*>?|&nbsp;", "");
+        content = content.replace("- dc App", "");
+        content = content.replace("\\\"", "\"")
+                .replace("\\/", "/")
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&");
+        return content.trim().replaceAll("\\s+", " ");
     }
 
     private static String decodeUnicode(String input) {
@@ -279,16 +372,13 @@ public class comment_Parser {
     private static String normalizeDate(String date) {
         if (date == null || date.isEmpty()) return null;
 
-        // 이미 정규화된 형식
         if (date.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}")) return date;
 
         try {
-            // "03.23 00:11:58" 형식 — 년도 없음
             if (date.matches("\\d{2}\\.\\d{2} \\d{2}:\\d{2}:\\d{2}")) {
-                int currentYear  = java.time.LocalDate.now().getYear();
+                int currentYear = java.time.LocalDate.now().getYear();
                 int currentMonth = java.time.LocalDate.now().getMonthValue();
                 int month = Integer.parseInt(date.substring(0, 2));
-                // 월이 현재보다 크면 작년 데이터
                 int year = (month > currentMonth) ? currentYear - 1 : currentYear;
                 String normalized = year + "-" + date.replace(".", "-").replaceFirst("-", "-");
                 return java.time.LocalDateTime.parse(
@@ -297,7 +387,6 @@ public class comment_Parser {
                 ).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
             }
 
-            // 기타 패턴
             List<String> patterns = List.of(
                     "yyyy-MM-dd HH:mm:ss",
                     "yyyy.MM.dd HH:mm:ss",
@@ -312,7 +401,8 @@ public class comment_Parser {
                             date.trim(),
                             java.time.format.DateTimeFormatter.ofPattern(pattern)
                     ).format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
-                } catch (Exception ignored) {}
+                } catch (Exception ignored) {
+                }
             }
 
         } catch (Exception e) {

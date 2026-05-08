@@ -1,6 +1,7 @@
 package crawler;
 
 import org.jsoup.Jsoup;
+import org.jsoup.HttpStatusException;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
@@ -11,6 +12,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class page_parser {
+    private static final int MAX_PAGE_CONCURRENCY = 20;
+    private static final int BLOCK_COOLDOWN_BASE_MS = 5000;
+    private static volatile long globalCooldownUntil = 0L;
 
     public static CrawlerResult Crawler(String ID, String Gall, int start, int end, int concurrency) throws InterruptedException {
         ArrayList<String> skipSubjects = new ArrayList<>(Arrays.asList("고정", "공지", "설문", "AD"));
@@ -27,7 +31,8 @@ public class page_parser {
 
         int total_geul = 0;
 
-        ExecutorService executor = Executors.newFixedThreadPool(concurrency);
+        int effectiveConcurrency = Math.max(1, Math.min(concurrency, MAX_PAGE_CONCURRENCY));
+        ExecutorService executor = Executors.newFixedThreadPool(effectiveConcurrency);
         List<Future<Void>> futures = new ArrayList<>();
         AtomicInteger completedPages = new AtomicInteger(0);
 
@@ -53,9 +58,10 @@ public class page_parser {
                 int retries = 3;
                 while (retries-- > 0) {
                     try {
-                        // 1. [암묵적 쿨다운] 페이지 요청 시작 전 0.2초 대기
-                        // 스레드들이 몰리는 것을 방지하기 위해 각 작업 시작 시점에 배치
-                        Thread.sleep(200);
+                        waitGlobalCooldown();
+
+                        // 스레드들이 같은 순간에 몰리지 않게 요청 전 지터를 둔다.
+                        Thread.sleep(ThreadLocalRandom.current().nextInt(300, 901));
 
                         // 다른 스레드에 의해 글로벌 쿨다운(에러 발생 등) 중인지 체크
                         while (isPaused.get()) {
@@ -124,9 +130,13 @@ public class page_parser {
                         if (retries == 0) {
                             System.err.println("\n[오류] 페이지 " + currentPage + " 실패: " + e.getMessage());
                         } else {
-                            // 에러 발생 시 1초간 전체 스레드 흐름을 제어 (쿨다운 게이트)
+                            if (isBlockingResponse(e)) {
+                                applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS * (4 - retries));
+                            }
+
+                            // 에러 발생 시 전체 스레드 흐름을 제어 (쿨다운 게이트)
                             if (isPaused.compareAndSet(false, true)) {
-                                Thread.sleep(1000);
+                                Thread.sleep(ThreadLocalRandom.current().nextInt(1500, 3501));
                                 isPaused.set(false);
                             }
                         }
@@ -164,6 +174,28 @@ public class page_parser {
             return Integer.parseInt(text.replaceAll("[^0-9]", ""));
         } catch (Exception e) {
             return 0;
+        }
+    }
+
+    private static boolean isBlockingResponse(Exception e) {
+        if (e instanceof HttpStatusException statusException) {
+            int status = statusException.getStatusCode();
+            return status == 403 || status == 429 || status == 503;
+        }
+        return false;
+    }
+
+    private static void applyGlobalCooldown(long millis) {
+        long jitter = ThreadLocalRandom.current().nextLong(1000, 4001);
+        long until = System.currentTimeMillis() + millis + jitter;
+        globalCooldownUntil = Math.max(globalCooldownUntil, until);
+        System.err.println("\n[차단 방지] 페이지 요청 쿨다운 " + ((millis + jitter) / 1000) + "초");
+    }
+
+    private static void waitGlobalCooldown() throws InterruptedException {
+        long wait = globalCooldownUntil - System.currentTimeMillis();
+        if (wait > 0) {
+            Thread.sleep(wait);
         }
     }
 }

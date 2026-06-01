@@ -1,10 +1,11 @@
 import javax.swing.*;
 import java.awt.*;
-import java.io.OutputStream;
-import java.io.PrintStream;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
 import crawler.*;
 import counter.CustomAnalyzer;
 import java.util.*;
+import java.util.List;
 
 public class Main {
     private static JLabel lblStatus  = new JLabel("상태: 대기 중");
@@ -12,14 +13,26 @@ public class Main {
     private static JLabel lblComment = new JLabel("댓글 진행: -");
     private static JLabel lblSpeed   = new JLabel("현재 속도: -");
     private static JLabel lblEta     = new JLabel("남은 시간: -");
+    private static final JTextArea txtLog = new JTextArea();
+
+    private static final List<PostProcessScript> POST_PROCESS_SCRIPTS = List.of(
+            new PostProcessScript("ExcelPrinter.py", null),
+            new PostProcessScript("GraphPrinter.py", null),
+            new PostProcessScript("GraphPrinter_sub.py", null),
+            new PostProcessScript("daily-count.py", Main::askDailyCountInput),
+            new PostProcessScript("analyzer.py", null),
+            new PostProcessScript("move.py", Main::askMoveInput),
+            new PostProcessScript("temp.py", Main::askTempModeInput),
+            new PostProcessScript("live-graph.py", null)
+    );
 
     public static void main(String[] args) {
         JFrame frame = new JFrame("Readersen");
-        frame.setSize(450, 560);
+        frame.setSize(760, 720);
         frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         frame.setLayout(new BorderLayout(15, 15));
 
-        JPanel inputPanel = new JPanel(new GridLayout(7, 2, 5, 5));
+        JPanel inputPanel = new JPanel(new GridLayout(0, 2, 5, 5));
 
         JTextField txtId = new JTextField("");
         JTextField txtStart = new JTextField("1");
@@ -37,6 +50,10 @@ public class Main {
         threadBox.setSelectedItem(30);
 
         JButton btnRun = new JButton("분석 시작");
+        JButton btnRunPostProcess = new JButton("선택 실행");
+        JButton btnSelectAll = new JButton("전체 선택");
+        JButton btnClearAll = new JButton("선택 해제");
+        Map<JCheckBox, PostProcessScript> scriptChecks = new LinkedHashMap<>();
 
         inputPanel.add(new JLabel(" TYPE:")); inputPanel.add(typeBox);
         inputPanel.add(new JLabel(" 갤러리 ID:")); inputPanel.add(txtId);
@@ -65,7 +82,73 @@ public class Main {
         statusPanel.add(lblSpeed);
         statusPanel.add(lblEta);
 
+        JPanel postProcessPanel = new JPanel(new BorderLayout(8, 8));
+        postProcessPanel.setBorder(BorderFactory.createTitledBorder("후가공 스크립트"));
+
+        JPanel scriptListPanel = new JPanel();
+        scriptListPanel.setLayout(new BoxLayout(scriptListPanel, BoxLayout.Y_AXIS));
+        for (PostProcessScript script : POST_PROCESS_SCRIPTS) {
+            JCheckBox checkBox = new JCheckBox(script.fileName());
+            if (!new File(script.fileName()).exists()) {
+                checkBox.setEnabled(false);
+                checkBox.setText(script.fileName() + " (파일 없음)");
+            }
+            scriptChecks.put(checkBox, script);
+            scriptListPanel.add(checkBox);
+        }
+
+        JPanel postButtonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 0));
+        postButtonPanel.add(btnSelectAll);
+        postButtonPanel.add(btnClearAll);
+        postButtonPanel.add(btnRunPostProcess);
+
+        postProcessPanel.add(new JScrollPane(scriptListPanel), BorderLayout.CENTER);
+        postProcessPanel.add(postButtonPanel, BorderLayout.SOUTH);
+
+        txtLog.setEditable(false);
+        txtLog.setLineWrap(true);
+        txtLog.setWrapStyleWord(true);
+        txtLog.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        JScrollPane logScrollPane = new JScrollPane(txtLog);
+        logScrollPane.setBorder(BorderFactory.createTitledBorder("실행 로그"));
+
         redirectSystemStreams();
+
+        btnSelectAll.addActionListener(e -> scriptChecks.keySet().stream()
+                .filter(JCheckBox::isEnabled)
+                .forEach(checkBox -> checkBox.setSelected(true)));
+        btnClearAll.addActionListener(e -> scriptChecks.keySet()
+                .forEach(checkBox -> checkBox.setSelected(false)));
+
+        btnRunPostProcess.addActionListener(e -> {
+            List<PostProcessScript> selectedScripts = scriptChecks.entrySet().stream()
+                    .filter(entry -> entry.getKey().isSelected() && entry.getKey().isEnabled())
+                    .map(Map.Entry::getValue)
+                    .toList();
+
+            if (selectedScripts.isEmpty()) {
+                JOptionPane.showMessageDialog(frame, "실행할 후가공 스크립트를 선택하세요.");
+                return;
+            }
+
+            new Thread(() -> {
+                try {
+                    setPostProcessButtonsEnabled(btnRunPostProcess, btnSelectAll, btnClearAll, false);
+                    lblStatus.setForeground(Color.BLUE);
+                    lblStatus.setText("상태: 후가공 실행 중...");
+                    runPostProcessScripts(frame, selectedScripts);
+                    lblStatus.setText("상태: 후가공 완료");
+                    JOptionPane.showMessageDialog(frame, "선택한 후가공 스크립트 실행이 완료되었습니다.");
+                } catch (Exception ex) {
+                    lblStatus.setText("상태: 후가공 에러 발생!");
+                    lblStatus.setForeground(Color.RED);
+                    ex.printStackTrace();
+                    JOptionPane.showMessageDialog(frame, ex.getMessage(), "후가공 에러", JOptionPane.ERROR_MESSAGE);
+                } finally {
+                    setPostProcessButtonsEnabled(btnRunPostProcess, btnSelectAll, btnClearAll, true);
+                }
+            }).start();
+        });
 
         btnRun.addActionListener(e -> {
             new Thread(() -> {
@@ -101,8 +184,19 @@ public class Main {
                     CrawlerResult result = page_parser.Crawler(id, type, start, end, 60);
                     lblPage.setText("페이지 진행: 수집 완료");
 
+                    if (!result.gallType.isBlank() && !result.gallType.equals(type)) {
+                        type = result.gallType;
+                        System.out.println("댓글 요청 TYPE도 보정된 값으로 변경: " + type);
+                    }
+
                     lblStatus.setText("상태: [2/3] 댓글 데이터 파싱 중...");
-                    subResult commsub = comment_Parser.geulp(id, type, result.RepleTrueBox, threads);
+                    subResult commsub;
+                    if (result.RepleTrueBox.isEmpty()) {
+                        System.out.println("댓글이 있는 글을 찾지 못해 댓글 파싱을 건너뜁니다.");
+                        commsub = new subResult(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
+                    } else {
+                        commsub = comment_Parser.geulp(id, type, result.RepleTrueBox, threads);
+                    }
                     lblComment.setText("댓글 진행: 파싱 완료");
                     lblSpeed.setText("현재 속도: -");
                     lblEta.setText("남은 시간: -");
@@ -137,9 +231,138 @@ public class Main {
         });
 
         frame.add(inputPanel, BorderLayout.NORTH);
-        frame.add(statusPanel, BorderLayout.CENTER);
+        JPanel centerPanel = new JPanel(new BorderLayout(10, 10));
+        centerPanel.add(statusPanel, BorderLayout.NORTH);
+        centerPanel.add(postProcessPanel, BorderLayout.CENTER);
+        centerPanel.add(logScrollPane, BorderLayout.SOUTH);
+        frame.add(centerPanel, BorderLayout.CENTER);
         frame.setLocationRelativeTo(null);
         frame.setVisible(true);
+    }
+
+    private static void runPostProcessScripts(Component parent, List<PostProcessScript> scripts) throws Exception {
+        for (PostProcessScript script : scripts) {
+            List<String> inputLines = script.inputProvider() == null
+                    ? List.of()
+                    : script.inputProvider().getInput(parent);
+            if (inputLines == null) {
+                System.out.println("[후가공 취소] " + script.fileName());
+                return;
+            }
+            runPythonScript(script.fileName(), inputLines);
+        }
+    }
+
+    private static void runPythonScript(String scriptName, List<String> inputLines) throws Exception {
+        System.out.println("\n===== 후가공 실행: " + scriptName + " =====");
+        Process process = startPythonProcess(scriptName);
+        try (BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(process.getOutputStream(), StandardCharsets.UTF_8))) {
+            for (String inputLine : inputLines) {
+                writer.write(inputLine);
+                writer.newLine();
+            }
+        }
+
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println("[" + scriptName + "] " + line);
+            }
+        }
+
+        int exitCode = process.waitFor();
+        if (exitCode != 0) {
+            throw new IllegalStateException(scriptName + " 실행 실패 (exit code: " + exitCode + ")");
+        }
+        System.out.println("===== 완료: " + scriptName + " =====");
+    }
+
+    private static Process startPythonProcess(String scriptName) throws IOException {
+        try {
+            return createPythonProcess("python", scriptName).start();
+        } catch (IOException pythonException) {
+            System.out.println("python 명령 실행 실패, py -3로 재시도합니다.");
+            try {
+                return createPythonProcess("py", "-3", scriptName).start();
+            } catch (IOException pyException) {
+                pyException.addSuppressed(pythonException);
+                throw pyException;
+            }
+        }
+    }
+
+    private static ProcessBuilder createPythonProcess(String... command) {
+        ProcessBuilder processBuilder = new ProcessBuilder(command);
+        processBuilder.directory(new File(System.getProperty("user.dir")));
+        processBuilder.redirectErrorStream(true);
+        processBuilder.environment().put("PYTHONIOENCODING", "utf-8");
+        return processBuilder;
+    }
+
+    private static List<String> askDailyCountInput(Component parent) {
+        String start = JOptionPane.showInputDialog(parent, "시작 날짜를 입력하세요. (YYYY-MM-DD)", "daily-count.py", JOptionPane.QUESTION_MESSAGE);
+        if (start == null) return null;
+        String end = JOptionPane.showInputDialog(parent, "종료 날짜를 입력하세요. (YYYY-MM-DD)", "daily-count.py", JOptionPane.QUESTION_MESSAGE);
+        if (end == null) return null;
+        return List.of(start.trim(), end.trim());
+    }
+
+    private static List<String> askTempModeInput(Component parent) {
+        Object selected = JOptionPane.showInputDialog(
+                parent,
+                "분석 단위를 선택하세요.",
+                "temp.py",
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                new String[]{"M", "W", "D"},
+                "M");
+        if (selected == null) return null;
+        return List.of(selected.toString());
+    }
+
+    private static List<String> askMoveInput(Component parent) {
+        Object mode = JOptionPane.showInputDialog(
+                parent,
+                "분석 단위를 선택하세요.",
+                "move.py",
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                new String[]{"D", "W", "M"},
+                "D");
+        if (mode == null) return null;
+
+        Object graphType = JOptionPane.showInputDialog(
+                parent,
+                "그래프 종류를 선택하세요.",
+                "move.py",
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                new String[]{"B", "A", "C"},
+                "B");
+        if (graphType == null) return null;
+
+        String topN = JOptionPane.showInputDialog(parent, "표시할 사용자 수 N을 입력하세요.", "10");
+        if (topN == null) return null;
+
+        Object barStyle = JOptionPane.showInputDialog(
+                parent,
+                "집계 막대 스타일을 선택하세요.",
+                "move.py",
+                JOptionPane.QUESTION_MESSAGE,
+                null,
+                new String[]{"G", "S"},
+                "G");
+        if (barStyle == null) return null;
+
+        return List.of(mode.toString(), graphType.toString(), topN.trim(), barStyle.toString());
+    }
+
+    private static void setPostProcessButtonsEnabled(JButton runButton, JButton selectAllButton, JButton clearAllButton, boolean enabled) {
+        SwingUtilities.invokeLater(() -> {
+            runButton.setEnabled(enabled);
+            selectAllButton.setEnabled(enabled);
+            clearAllButton.setEnabled(enabled);
+        });
     }
 
     private static void redirectSystemStreams() {
@@ -181,7 +404,9 @@ public class Main {
                 if (!text.trim().isEmpty()) updateUI(text);
             }
         };
-        System.setOut(new PrintStream(out, true));
+        PrintStream printStream = new PrintStream(out, true);
+        System.setOut(printStream);
+        System.setErr(printStream);
     }
 
     private static void updateUI(String text) {
@@ -189,6 +414,7 @@ public class Main {
             String clean = text.trim();
             if (clean.isEmpty()) return;
 
+            appendLog(clean);
             if (clean.startsWith("페이지 진행:")) {
                 lblPage.setText(clean);
             } else if (clean.startsWith("진행:")) {
@@ -202,5 +428,18 @@ public class Main {
                 }
             }
         });
+    }
+
+    private static void appendLog(String text) {
+        txtLog.append(text + System.lineSeparator());
+        txtLog.setCaretPosition(txtLog.getDocument().getLength());
+    }
+
+    private record PostProcessScript(String fileName, ScriptInputProvider inputProvider) {
+    }
+
+    @FunctionalInterface
+    private interface ScriptInputProvider {
+        List<String> getInput(Component parent);
     }
 }

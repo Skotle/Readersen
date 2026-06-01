@@ -12,9 +12,15 @@ public class CrawlerResult {
     public ArrayList<String> RepleTrueBox;
     public ArrayList<String> DayBox;
     public int total_geul;
+    public String gallType;
 
     public CrawlerResult(ArrayList<String> authorBox,ArrayList<String> IDBox,ArrayList<String> IpBox, ArrayList<Integer> viewBox,
                          ArrayList<Integer> recomBox, ArrayList<Integer> repleBox, ArrayList<String> RepleTrueBox,ArrayList<String> DayBox,int total) {
+        this(authorBox, IDBox, IpBox, viewBox, recomBox, repleBox, RepleTrueBox, DayBox, total, "");
+    }
+
+    public CrawlerResult(ArrayList<String> authorBox,ArrayList<String> IDBox,ArrayList<String> IpBox, ArrayList<Integer> viewBox,
+                         ArrayList<Integer> recomBox, ArrayList<Integer> repleBox, ArrayList<String> RepleTrueBox,ArrayList<String> DayBox,int total, String gallType) {
         this.authorBox = authorBox;
         this.IDBox = IDBox;
         this.IpBox = IpBox;
@@ -24,5 +30,6 @@ public class CrawlerResult {
         this.RepleTrueBox = RepleTrueBox;
         this.DayBox = DayBox;
         this.total_geul = total;
+        this.gallType = gallType;
     }
 }

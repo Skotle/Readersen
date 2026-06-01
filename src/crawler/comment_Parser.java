@@ -6,6 +6,7 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -20,19 +21,14 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class comment_Parser {
-    private static final int MAX_COMMENT_CONCURRENCY = 30;
-    private static final int BLOCK_COOLDOWN_BASE_MS = 5000;
-    private static volatile long globalCooldownUntil = 0L;
-
-    private static final ScheduledExecutorService SCHEDULER =
-            Executors.newScheduledThreadPool(1);
-
     private record CommentEntry(String name, String uid, String ip, String date, String memo) {}
 
     public static subResult geulp(String ID, String TYPE, ArrayList<String> targets, int concurrency) {
@@ -41,8 +37,9 @@ public class comment_Parser {
         cookieManager.setCookiePolicy(CookiePolicy.ACCEPT_ALL);
 
         HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(5))
+                .connectTimeout(Duration.ofSeconds(10))
                 .cookieHandler(cookieManager)
+                .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
 
         ConcurrentLinkedQueue<CommentEntry> allComments = new ConcurrentLinkedQueue<>();
@@ -54,11 +51,9 @@ public class comment_Parser {
         AtomicInteger totalRetries = new AtomicInteger(0);
         AtomicInteger failedRequests = new AtomicInteger(0);
 
-        int effectiveConcurrency = Math.max(1, Math.min(concurrency, MAX_COMMENT_CONCURRENCY));
+        int effectiveConcurrency = Math.max(1, concurrency);
         Semaphore semaphore = new Semaphore(effectiveConcurrency);
-
-        ThreadLocal<SimpleRateLimiter> threadLimiter =
-                ThreadLocal.withInitial(() -> new SimpleRateLimiter(30 + Math.random() * 15));
+        ExecutorService taskExecutor = Executors.newFixedThreadPool(effectiveConcurrency);
 
         List<CompletableFuture<Void>> futures = new ArrayList<>();
 
@@ -66,17 +61,15 @@ public class comment_Parser {
             int articleNo = Integer.parseInt(target);
 
             CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                boolean acquired = false;
 
                 try {
                     semaphore.acquire();
-                    waitGlobalCooldown();
-                    Thread.sleep(ThreadLocalRandom.current().nextInt(100, 401));
-                    threadLimiter.get().acquire();
+                    acquired = true;
 
-                    CompletableFuture<Void> f =
-                            sendWithRetry(client, ID, TYPE, articleNo, 3,
-                                    totalRetries, failedRequests)
-                                    .thenAccept(response -> {
+                    sendWithRetry(client, ID, TYPE, articleNo, 3,
+                            totalRetries, failedRequests)
+                            .thenAccept(response -> {
 
                                         List<Map<String, String>> commentData =
                                                 extractNamesWithInfo(response);
@@ -116,9 +109,9 @@ public class comment_Parser {
 
                                         int done = completed.incrementAndGet();
 
-                                        if (done % 50 == 0 || done == targets.size()) {
+                                        if (done > 0) {
                                             long elapsed = System.currentTimeMillis() - startTime;
-                                            double rps = done / (elapsed / 1000.0);
+                                            double rps = done / Math.max(0.001, elapsed / 1000.0);
                                             double pct = (double) done / targets.size() * 100;
 
                                             if (pct > 20) pers.add(rps);
@@ -131,22 +124,33 @@ public class comment_Parser {
                                             );
                                         }
 
-                                    });
-
-                    futures.add(f);
+                            }).join();
 
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
+                } catch (CompletionException e) {
+                    failedRequests.incrementAndGet();
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    System.out.println("\n글 번호: " + articleNo + " 처리 실패: " + cause.getMessage());
+                } catch (Exception e) {
+                    failedRequests.incrementAndGet();
+                    System.out.println("\n글 번호: " + articleNo + " 처리 실패: " + e.getMessage());
                 } finally {
-                    semaphore.release();
+                    if (acquired) {
+                        semaphore.release();
+                    }
                 }
 
-            });
+            }, taskExecutor);
 
             futures.add(future);
         }
 
-        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        try {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
+        } finally {
+            taskExecutor.shutdownNow();
+        }
 
         long totalElapsed = System.currentTimeMillis() - startTime;
         double finalRpSec = targets.size() / (totalElapsed / 1000.0);
@@ -185,49 +189,6 @@ public class comment_Parser {
         return new subResult(resultNames, resultIDs, resultIps, resultDays, resultContents);
     }
 
-    private static CompletableFuture<Void> delayAsync(long millis) {
-        CompletableFuture<Void> f = new CompletableFuture<>();
-        SCHEDULER.schedule(() -> f.complete(null), millis, TimeUnit.MILLISECONDS);
-        return f;
-    }
-
-    private static void waitGlobalCooldown() throws InterruptedException {
-        long wait = globalCooldownUntil - System.currentTimeMillis();
-        if (wait > 0) {
-            Thread.sleep(wait);
-        }
-    }
-
-    private static CompletableFuture<Void> waitGlobalCooldownAsync() {
-        long wait = globalCooldownUntil - System.currentTimeMillis();
-        if (wait <= 0) {
-            return CompletableFuture.completedFuture(null);
-        }
-        return delayAsync(wait);
-    }
-
-    private static void applyGlobalCooldown(long millis) {
-        long jitter = ThreadLocalRandom.current().nextLong(1000, 4001);
-        long until = System.currentTimeMillis() + millis + jitter;
-        globalCooldownUntil = Math.max(globalCooldownUntil, until);
-        System.out.println("\n[차단 방지] 댓글 요청 쿨다운 " + ((millis + jitter) / 1000) + "초");
-    }
-
-    private static long getRetryDelayMillis(HttpResponse<?> response, long fallbackMillis) {
-        return response.headers()
-                .firstValue("Retry-After")
-                .map(value -> parseRetryAfterMillis(value, fallbackMillis))
-                .orElse(fallbackMillis);
-    }
-
-    private static long parseRetryAfterMillis(String value, long fallbackMillis) {
-        try {
-            return Math.max(1000L, Long.parseLong(value.trim()) * 1000L);
-        } catch (NumberFormatException e) {
-            return fallbackMillis;
-        }
-    }
-
     private static CompletableFuture<String> sendWithRetry(HttpClient client, String ID, String TYPE,
                                                            int articleNo, int maxRetry,
                                                            AtomicInteger totalRetries,
@@ -253,31 +214,41 @@ public class comment_Parser {
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create("https://gall.dcinside.com/board/comment/"))
-                .timeout(Duration.ofSeconds(5))
-                .header("User-Agent", "Mozilla/5.0")
+                .timeout(Duration.ofSeconds(15))
+                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36")
+                .header("Accept", "application/json, text/javascript, */*; q=0.01")
+                .header("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7")
                 .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                 .header("X-Requested-With", "XMLHttpRequest")
+                .header("Origin", "https://gall.dcinside.com")
                 .header("Referer", referer)
-                .POST(HttpRequest.BodyPublishers.ofString(payload))
+                .POST(HttpRequest.BodyPublishers.ofString(payload, StandardCharsets.UTF_8))
                 .build();
 
-        return waitGlobalCooldownAsync()
-                .thenCompose(ignored -> client.sendAsync(request, HttpResponse.BodyHandlers.ofString()))
+        return client.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
                 .thenCompose(response -> {
                     int status = response.statusCode();
                     if (status == 403 || status == 429 || status == 503) {
                         totalRetries.incrementAndGet();
                         if (maxRetry > 0) {
-                            long delay = getRetryDelayMillis(response, 500L * (4 - maxRetry));
-                            applyGlobalCooldown(delay);
-                            return delayAsync(delay)
-                                    .thenCompose(ignored ->
-                                            sendWithRetry(client, ID, TYPE, articleNo,
-                                                    maxRetry - 1, totalRetries, failedRequests));
+                            return sendWithRetry(client, ID, TYPE, articleNo,
+                                    maxRetry - 1, totalRetries, failedRequests);
                         }
 
                         failedRequests.incrementAndGet();
                         System.out.println("\n글 번호: " + articleNo + " 차단성 응답(" + status + "), 스킵됨");
+                        return CompletableFuture.completedFuture("");
+                    }
+
+                    if (status < 200 || status >= 300) {
+                        totalRetries.incrementAndGet();
+                        if (maxRetry > 0) {
+                            return sendWithRetry(client, ID, TYPE, articleNo,
+                                    maxRetry - 1, totalRetries, failedRequests);
+                        }
+
+                        failedRequests.incrementAndGet();
+                        System.out.println("\n글 번호: " + articleNo + " HTTP " + status + ", 스킵됨");
                         return CompletableFuture.completedFuture("");
                     }
 
@@ -286,11 +257,8 @@ public class comment_Parser {
                 .exceptionallyCompose(ex -> {
                     totalRetries.incrementAndGet();
                     if (maxRetry > 0) {
-                        long delay = 500L * (4 - maxRetry);
-                        return delayAsync(delay)
-                                .thenCompose(ignored ->
-                                        sendWithRetry(client, ID, TYPE, articleNo,
-                                                maxRetry - 1, totalRetries, failedRequests));
+                        return sendWithRetry(client, ID, TYPE, articleNo,
+                                maxRetry - 1, totalRetries, failedRequests);
                     } else {
                         failedRequests.incrementAndGet();
                         System.out.println("\n글 번호: " + articleNo + " 요청 실패, 스킵됨");

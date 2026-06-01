@@ -12,7 +12,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 public class page_parser {
-    private static final int MAX_PAGE_CONCURRENCY = 20;
     private static final int BLOCK_COOLDOWN_BASE_MS = 5000;
     private static volatile long globalCooldownUntil = 0L;
 
@@ -31,7 +30,7 @@ public class page_parser {
 
         int total_geul = 0;
 
-        int effectiveConcurrency = Math.max(1, Math.min(concurrency, MAX_PAGE_CONCURRENCY));
+        int effectiveConcurrency = Math.max(1, concurrency);
         ExecutorService executor = Executors.newFixedThreadPool(effectiveConcurrency);
         List<Future<Void>> futures = new ArrayList<>();
         AtomicInteger completedPages = new AtomicInteger(0);
@@ -39,17 +38,13 @@ public class page_parser {
         // 쿨다운 상태 관리 변수
         AtomicBoolean isPaused = new AtomicBoolean(false);
 
-        String baseurl;
-        String subtag;
-        if ("mini".equals(Gall)) {
-            subtag = "td.gall_subject";
-            baseurl = "https://gall.dcinside.com/mini/board/lists/?id=" + ID;
-        } else if ("m".equals(Gall)) {
-            subtag = "td.gall_subject";
-            baseurl = "https://gall.dcinside.com/mgallery/board/lists/?id=" + ID;
-        } else {
-            subtag = "td.gall_num";
-            baseurl = "https://gall.dcinside.com/board/lists/?id=" + ID;
+        GalleryConfig galleryConfig = resolveGalleryConfig(ID, Gall);
+        String baseurl = galleryConfig.baseUrl();
+        String subtag = galleryConfig.subjectSelector();
+        String actualGallType = galleryConfig.type();
+
+        if (!actualGallType.equals(Gall)) {
+            System.out.println("갤러리 타입 자동 보정: " + Gall + " -> " + actualGallType);
         }
 
         for (int page = start; page <= end; page++) {
@@ -69,11 +64,7 @@ public class page_parser {
                         }
 
                         String key = baseurl + "&page=" + currentPage;
-                        Document doc = Jsoup.connect(key)
-                                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                                .header("Referer", "https://www.google.com")
-                                .timeout(5000)
-                                .get();
+                        Document doc = fetchListDocument(key, actualGallType, ID);
 
                         Elements trList = doc.select("tr.ub-content");
 
@@ -108,8 +99,8 @@ public class page_parser {
                                 IpBox.add(ip);
                                 IDBox.add(uid);
                                 days.add(day != null ? day.attr("title") : "");
-                                ViewBox.add(parseSafeInt(view.text()));
-                                RecomBox.add(parseSafeInt(recommend.text()));
+                                ViewBox.add(parseSafeInt(view != null ? view.text() : ""));
+                                RecomBox.add(parseSafeInt(recommend != null ? recommend.text() : ""));
 
                                 if (reple != null) {
                                     RepleTrueBox.add(geulnumText);
@@ -127,6 +118,11 @@ public class page_parser {
                         break;
 
                     } catch (Exception e) {
+                        if (isNotFound(e)) {
+                            System.out.println("\n[건너뜀] 페이지 " + currentPage + " 없음(404)");
+                            completedPages.incrementAndGet();
+                            break;
+                        }
                         if (retries == 0) {
                             System.err.println("\n[오류] 페이지 " + currentPage + " 실패: " + e.getMessage());
                         } else {
@@ -155,8 +151,69 @@ public class page_parser {
         return new CrawlerResult(
                 new ArrayList<>(AuthorBox), new ArrayList<>(IDBox), new ArrayList<>(IpBox),
                 new ArrayList<>(ViewBox), new ArrayList<>(RecomBox), new ArrayList<>(RepleBox),
-                new ArrayList<>(RepleTrueBox), new ArrayList<>(days), total_geul
+                new ArrayList<>(RepleTrueBox), new ArrayList<>(days), total_geul, actualGallType
         );
+    }
+
+    private static GalleryConfig resolveGalleryConfig(String id, String preferredType) throws InterruptedException {
+        List<String> candidates = new ArrayList<>();
+        addCandidate(candidates, preferredType);
+        addCandidate(candidates, "m");
+        addCandidate(candidates, "main");
+        addCandidate(candidates, "mini");
+
+        Exception lastException = null;
+        for (String type : candidates) {
+            GalleryConfig config = galleryConfigFor(type, id);
+            try {
+                fetchListDocument(config.baseUrl() + "&page=1", config.type(), id);
+                return config;
+            } catch (Exception e) {
+                lastException = e;
+                if (isBlockingResponse(e)) {
+                    applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS);
+                    waitGlobalCooldown();
+                }
+            }
+        }
+
+        String message = lastException == null ? "알 수 없는 오류" : lastException.getMessage();
+        throw new IllegalArgumentException("갤러리 주소를 찾지 못했습니다. TYPE과 갤러리 ID를 확인하세요. (" + message + ")");
+    }
+
+    private static void addCandidate(List<String> candidates, String type) {
+        String normalized = normalizeType(type);
+        if (!candidates.contains(normalized)) {
+            candidates.add(normalized);
+        }
+    }
+
+    private static String normalizeType(String type) {
+        if ("mini".equals(type)) return "mini";
+        if ("m".equals(type)) return "m";
+        return "main";
+    }
+
+    private static GalleryConfig galleryConfigFor(String type, String id) {
+        String normalized = normalizeType(type);
+        if ("mini".equals(normalized)) {
+            return new GalleryConfig("mini", "https://gall.dcinside.com/mini/board/lists/?id=" + id, "td.gall_subject");
+        }
+        if ("m".equals(normalized)) {
+            return new GalleryConfig("m", "https://gall.dcinside.com/mgallery/board/lists/?id=" + id, "td.gall_subject");
+        }
+        return new GalleryConfig("main", "https://gall.dcinside.com/board/lists/?id=" + id, "td.gall_num");
+    }
+
+    private static Document fetchListDocument(String url, String gallType, String id) throws java.io.IOException {
+        return Jsoup.connect(url)
+                .userAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36")
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7")
+                .header("Cache-Control", "no-cache")
+                .header("Referer", refererFor(gallType, id))
+                .timeout(15000)
+                .get();
     }
 
     private static String determineSubnik(String imgSrc) {
@@ -167,6 +224,19 @@ public class page_parser {
             return "비고정";
         }
         return "유동";
+    }
+
+    private static String refererFor(String gallType, String id) {
+        if ("mini".equals(gallType)) {
+            return "https://gall.dcinside.com/mini/board/lists/?id=" + id;
+        }
+        if ("m".equals(gallType)) {
+            return "https://gall.dcinside.com/mgallery/board/lists/?id=" + id;
+        }
+        return "https://gall.dcinside.com/board/lists/?id=" + id;
+    }
+
+    private record GalleryConfig(String type, String baseUrl, String subjectSelector) {
     }
 
     private static int parseSafeInt(String text) {
@@ -183,6 +253,10 @@ public class page_parser {
             return status == 403 || status == 429 || status == 503;
         }
         return false;
+    }
+
+    private static boolean isNotFound(Exception e) {
+        return e instanceof HttpStatusException statusException && statusException.getStatusCode() == 404;
     }
 
     private static void applyGlobalCooldown(long millis) {

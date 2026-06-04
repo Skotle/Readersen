@@ -23,6 +23,7 @@ set_korean_font()
 POST_WEIGHT    = 0.56
 COMMENT_WEIGHT = 0.18
 MAX_TOP_N = 28
+LOW_PERIOD_AVERAGE_RATIO = 0.05
 ILLEGAL_EXCEL_CHAR_RE = re.compile(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]')
 
 # === 블랙리스트 설정 ===
@@ -173,6 +174,11 @@ def save_final_clean_report(post_file, comment_file, mode='D', graph_type='B', t
                 pivot_df['기타(Others)'] += pivot_df[user]
                 pivot_df = pivot_df.drop(columns=[user])
 
+    pivot_df = filter_low_activity_periods(pivot_df)
+    if pivot_df.empty:
+        print("전체기간 평균 5% 초과 기간이 없어 집계를 중단합니다.")
+        return
+
     cumulative_scores = pivot_df.cumsum()
     selected_users = select_final_top_users(cumulative_scores, top_n)
     
@@ -219,6 +225,29 @@ def build_period_top_n_data(pivot_df, selected_users, top_n):
             if user in result.columns:
                 result.at[period, user] = value
     return result
+
+def filter_low_activity_periods(pivot_df, threshold_ratio=LOW_PERIOD_AVERAGE_RATIO):
+    if pivot_df.empty:
+        return pivot_df
+
+    period_totals = pivot_df.sum(axis=1)
+    average = period_totals.mean()
+    threshold = average * threshold_ratio
+    keep_mask = period_totals > threshold
+    removed = pivot_df.index[~keep_mask].tolist()
+
+    if not keep_mask.any():
+        max_period = period_totals.idxmax()
+        print(f"저활동 기간 필터링: 모든 기간이 기준 이하라 총합 최대 기간 1개 유지 ({max_period})")
+        return pivot_df.loc[[max_period]]
+
+    if removed:
+        print(f"저활동 기간 필터링: 전체기간 평균 {average:.2f}의 {threshold_ratio * 100:.1f}% 이하({threshold:.2f}) {len(removed)}개 제거")
+        print("제거 기간:", ", ".join(map(str, removed[:20])) + (" ..." if len(removed) > 20 else ""))
+    else:
+        print(f"저활동 기간 필터링: 전체기간 평균 {average:.2f}의 {threshold_ratio * 100:.1f}% 이하({threshold:.2f}) 제거 없음")
+
+    return pivot_df.loc[keep_mask]
 
 def build_user_colors(users):
     cmap = plt.get_cmap('hsv', max(1, len(users) + 1))

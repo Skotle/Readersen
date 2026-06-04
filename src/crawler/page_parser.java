@@ -17,6 +17,7 @@ public class page_parser {
 
     public static CrawlerResult Crawler(String ID, String Gall, int start, int end, int concurrency) throws InterruptedException {
         ArrayList<String> skipSubjects = new ArrayList<>(Arrays.asList("고정", "공지", "설문", "AD"));
+        ArrayList<String> skipAuthor = new ArrayList<>(Arrays.asList("운영자","김유식"));
 
         // Thread-safe 데이터 저장소
         List<String> AuthorBox = Collections.synchronizedList(new ArrayList<>());
@@ -73,7 +74,6 @@ public class page_parser {
                             if (subjectTd != null && !skipSubjects.contains(subjectTd.text().trim())) {
 
                                 Element writerTd = tag.selectFirst("td.gall_writer");
-                                if (writerTd == null) continue;
 
                                 String imgSrc = "";
                                 Element img = writerTd.selectFirst("a.writer_nikcon img");
@@ -82,6 +82,7 @@ public class page_parser {
                                 String subnik = determineSubnik(imgSrc);
                                 String uid = writerTd.attr("data-uid");
                                 String nick = writerTd.attr("data-nick");
+                                if (skipAuthor.contains((nick))) continue;
                                 String ip = writerTd.attr("data-ip");
                                 String displayName = subnik + nick;
 

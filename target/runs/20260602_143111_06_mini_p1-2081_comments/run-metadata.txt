@@ -1,0 +1,11 @@
+created_at=2026-06-02T14:37:00.5478682
+id=06
+type=mini
+start_page=1
+end_page=2081
+comment_threads=30
+include_comments=true
+posts=104045
+comment_targets=65388
+comments=226994
+elapsed_seconds=348

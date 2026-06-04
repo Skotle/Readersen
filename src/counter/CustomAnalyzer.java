@@ -1,6 +1,7 @@
 package counter;
 
 import java.io.BufferedWriter;
+import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.ArrayList;
@@ -98,6 +99,7 @@ public class CustomAnalyzer {
     }
 
     public void printSummary(String filename) {
+        ensureParentDirectory(filename);
         try (FileWriter writer = new FileWriter(filename)) {
             StringBuilder json = new StringBuilder();
             json.append("[\n");
@@ -142,11 +144,13 @@ public class CustomAnalyzer {
 
     // 기존의 날짜/시간 저장 기능 유지
     public void textprinter(List<String> days,String filename) {
+        ensureParentDirectory(filename);
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename))) {
             for (String day : days) { writer.write(day); writer.newLine(); }
         } catch (IOException e) { e.printStackTrace(); }
     }
     public void timeprinter(List<String> times) {
+        ensureParentDirectory("time-data.txt");
         try (BufferedWriter writer = new BufferedWriter(new FileWriter("time-data.txt"))) {
             for (String t : times) { writer.write(t); writer.newLine(); }
         } catch (IOException e) { e.printStackTrace(); }
@@ -158,6 +162,7 @@ public class CustomAnalyzer {
             return;
         }
 
+        ensureParentDirectory(filename);
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename))) {
             int size = names.size();
             for (int i = 0; i < size; i++) {
@@ -180,6 +185,14 @@ public class CustomAnalyzer {
             System.out.println("로그 저장 완료: " + filename);
         } catch (IOException e) {
             e.printStackTrace();
+        }
+    }
+
+    private void ensureParentDirectory(String filename) {
+        File file = new File(filename);
+        File parent = file.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            System.out.println("폴더 생성 실패: " + parent.getAbsolutePath());
         }
     }
 }

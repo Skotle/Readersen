@@ -2,6 +2,9 @@ import javax.swing.*;
 import java.awt.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import crawler.*;
 import counter.CustomAnalyzer;
 import java.util.*;
@@ -14,6 +17,7 @@ public class Main {
     private static JLabel lblSpeed   = new JLabel("현재 속도: -");
     private static JLabel lblEta     = new JLabel("남은 시간: -");
     private static final JTextArea txtLog = new JTextArea();
+    private static final int MAX_LOG_CHARS = 200_000;
 
     private static final List<PostProcessScript> POST_PROCESS_SCRIPTS = List.of(
             new PostProcessScript("ExcelPrinter.py", null),
@@ -22,6 +26,8 @@ public class Main {
             new PostProcessScript("daily-count.py", Main::askDailyCountInput),
             new PostProcessScript("analyzer.py", null),
             new PostProcessScript("move.py", Main::askMoveInput),
+            new PostProcessScript("move1.py", Main::askMoveInput),
+            new PostProcessScript("move2.py", Main::askMoveInput),
             new PostProcessScript("temp.py", Main::askTempModeInput),
             new PostProcessScript("live-graph.py", null)
     );
@@ -49,6 +55,11 @@ public class Main {
         for (int i = 2; i <= 120; i += 2) threadBox.addItem(i);
         threadBox.setSelectedItem(30);
 
+        JComboBox<String> runScopeBox = new JComboBox<>();
+        runScopeBox.addItem("페이지 파서만");
+        runScopeBox.addItem("댓글까지 진행");
+        runScopeBox.setSelectedItem("댓글까지 진행");
+
         JButton btnRun = new JButton("분석 시작");
         JButton btnRunPostProcess = new JButton("선택 실행");
         JButton btnSelectAll = new JButton("전체 선택");
@@ -59,6 +70,7 @@ public class Main {
         inputPanel.add(new JLabel(" 갤러리 ID:")); inputPanel.add(txtId);
         inputPanel.add(new JLabel(" 시작 페이지:")); inputPanel.add(txtStart);
         inputPanel.add(new JLabel(" 종료 페이지:")); inputPanel.add(txtEnd);
+        inputPanel.add(new JLabel(" 실행 범위:")); inputPanel.add(runScopeBox);
         inputPanel.add(new JLabel(" 댓글 스레드 수:")); inputPanel.add(threadBox);
         inputPanel.add(new JLabel(" 작업 실행:")); inputPanel.add(btnRun);
 
@@ -114,6 +126,11 @@ public class Main {
 
         redirectSystemStreams();
 
+        runScopeBox.addActionListener(e -> {
+            boolean includeComments = "댓글까지 진행".equals(runScopeBox.getSelectedItem());
+            threadBox.setEnabled(includeComments);
+        });
+
         btnSelectAll.addActionListener(e -> scriptChecks.keySet().stream()
                 .filter(JCheckBox::isEnabled)
                 .forEach(checkBox -> checkBox.setSelected(true)));
@@ -131,6 +148,7 @@ public class Main {
                 return;
             }
 
+            clearLog();
             new Thread(() -> {
                 try {
                     setPostProcessButtonsEnabled(btnRunPostProcess, btnSelectAll, btnClearAll, false);
@@ -151,6 +169,7 @@ public class Main {
         });
 
         btnRun.addActionListener(e -> {
+            clearLog();
             new Thread(() -> {
                 try {
                     btnRun.setEnabled(false);
@@ -165,6 +184,7 @@ public class Main {
                     int start = Integer.parseInt(txtStart.getText().trim());
                     int end = Integer.parseInt(txtEnd.getText().trim());
                     int threads = (int) threadBox.getSelectedItem();
+                    boolean includeComments = "댓글까지 진행".equals(runScopeBox.getSelectedItem());
 
                     if (id.isEmpty()) {
                         throw new IllegalArgumentException("갤러리 ID를 입력하세요.");
@@ -179,6 +199,9 @@ public class Main {
                     System.out.println("TYPE: " + type);
                     System.out.println("ID: " + id);
                     System.out.println("Threads: " + threads);
+                    System.out.println("Scope: " + (includeComments ? "페이지+댓글" : "페이지만"));
+                    Path runDir = createRunDirectory(id, type, start, end, includeComments);
+                    System.out.println("Output: " + runDir.toAbsolutePath());
 
                     lblStatus.setText("상태: [1/3] 페이지 목록 수집 중...");
                     CrawlerResult result = page_parser.Crawler(id, type, start, end, 60);
@@ -191,13 +214,18 @@ public class Main {
 
                     lblStatus.setText("상태: [2/3] 댓글 데이터 파싱 중...");
                     subResult commsub;
-                    if (result.RepleTrueBox.isEmpty()) {
+                    if (!includeComments) {
+                        System.out.println("실행 범위가 페이지 파서만으로 설정되어 댓글 파싱을 건너뜁니다.");
+                        lblComment.setText("댓글 진행: 건너뜀");
+                        commsub = new subResult(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
+                    } else if (result.RepleTrueBox.isEmpty()) {
                         System.out.println("댓글이 있는 글을 찾지 못해 댓글 파싱을 건너뜁니다.");
+                        lblComment.setText("댓글 진행: 건너뜀");
                         commsub = new subResult(new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>(), new ArrayList<>());
                     } else {
                         commsub = comment_Parser.geulp(id, type, result.RepleTrueBox, threads);
+                        lblComment.setText("댓글 진행: 파싱 완료");
                     }
-                    lblComment.setText("댓글 진행: 파싱 완료");
                     lblSpeed.setText("현재 속도: -");
                     lblEta.setText("남은 시간: -");
 
@@ -207,15 +235,18 @@ public class Main {
                             result.authorBox, result.IDBox, result.IpBox,
                             result.viewBox, result.recomBox, result.repleBox);
                     analyzer.applyCommList(commsub.Names, commsub.IDs, commsub.Ips);
-                    analyzer.printSummary("example.txt");
-                    analyzer.textprinter(result.DayBox, "date-data.txt");
-                    analyzer.textprinter(commsub.Contents, "contents_data.txt");
-                    analyzer.saveUserLog(result.authorBox, result.IDBox, result.IpBox, result.DayBox, "daily-data.txt");
-                    analyzer.textprinter(commsub.Days, "date-data-comment.txt");
-                    analyzer.saveUserLog(commsub.Names, commsub.IDs, commsub.Ips, commsub.Days, "daily-data-comment.txt");
+                    analyzer.printSummary(runDir.resolve("example.txt").toString());
+                    analyzer.textprinter(result.DayBox, runDir.resolve("date-data.txt").toString());
+                    analyzer.textprinter(commsub.Contents, runDir.resolve("contents_data.txt").toString());
+                    analyzer.saveUserLog(result.authorBox, result.IDBox, result.IpBox, result.DayBox, runDir.resolve("daily-data.txt").toString());
+                    analyzer.textprinter(commsub.Days, runDir.resolve("date-data-comment.txt").toString());
+                    analyzer.saveUserLog(commsub.Names, commsub.IDs, commsub.Ips, commsub.Days, runDir.resolve("daily-data-comment.txt").toString());
+                    writeRunMetadata(runDir, id, type, start, end, threads, includeComments, result, commsub, startTime);
+                    mirrorLatestSourceOutputs(runDir);
 
                     System.out.println("총소요: " + (System.currentTimeMillis() - startTime) / 1000 + "초");
                     System.out.println("대상 타겟: " + result.RepleTrueBox.size() + "/" + result.IDBox.size() + "개");
+                    System.out.println("실행별 산출 폴더: " + runDir.toAbsolutePath());
 
                     lblStatus.setText("상태: 모든 작업 완료");
                     JOptionPane.showMessageDialog(frame, "분석 완료! 결과 파일을 확인하세요.");
@@ -299,6 +330,67 @@ public class Main {
         return processBuilder;
     }
 
+    private static Path createRunDirectory(String id, String type, int start, int end, boolean includeComments) throws IOException {
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        String scope = includeComments ? "comments" : "pages";
+        String folderName = String.format(
+                "%s_%s_%s_p%d-%d_%s",
+                timestamp,
+                sanitizePathPart(id),
+                sanitizePathPart(type),
+                start,
+                end,
+                scope
+        );
+        Path runDir = Paths.get(System.getProperty("user.dir"), "runs", folderName).toAbsolutePath().normalize();
+        Files.createDirectories(runDir);
+        return runDir;
+    }
+
+    private static String sanitizePathPart(String value) {
+        String sanitized = value == null ? "" : value.replaceAll("[^a-zA-Z0-9._-]", "_");
+        return sanitized.isBlank() ? "unknown" : sanitized;
+    }
+
+    private static void writeRunMetadata(Path runDir, String id, String type, int start, int end, int threads,
+                                         boolean includeComments, CrawlerResult result, subResult commsub,
+                                         long startTime) throws IOException {
+        List<String> lines = List.of(
+                "created_at=" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
+                "id=" + id,
+                "type=" + type,
+                "start_page=" + start,
+                "end_page=" + end,
+                "comment_threads=" + threads,
+                "include_comments=" + includeComments,
+                "posts=" + result.IDBox.size(),
+                "comment_targets=" + result.RepleTrueBox.size(),
+                "comments=" + commsub.Names.size(),
+                "elapsed_seconds=" + ((System.currentTimeMillis() - startTime) / 1000)
+        );
+        Files.createDirectories(runDir);
+        Files.write(runDir.resolve("run-metadata.txt"), lines, StandardCharsets.UTF_8);
+    }
+
+    private static void mirrorLatestSourceOutputs(Path runDir) throws IOException {
+        String[] outputFiles = {
+                "example.txt",
+                "date-data.txt",
+                "contents_data.txt",
+                "daily-data.txt",
+                "date-data-comment.txt",
+                "daily-data-comment.txt",
+                "run-metadata.txt"
+        };
+
+        for (String fileName : outputFiles) {
+            Path source = runDir.resolve(fileName);
+            if (Files.exists(source)) {
+                Files.copy(source, Paths.get(fileName), StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
     private static List<String> askDailyCountInput(Component parent) {
         String start = JOptionPane.showInputDialog(parent, "시작 날짜를 입력하세요. (YYYY-MM-DD)", "daily-count.py", JOptionPane.QUESTION_MESSAGE);
         if (start == null) return null;
@@ -341,16 +433,16 @@ public class Main {
                 "B");
         if (graphType == null) return null;
 
-        String topN = JOptionPane.showInputDialog(parent, "표시할 사용자 수 N을 입력하세요.", "10");
+        String topN = JOptionPane.showInputDialog(parent, "표시할 사용자 수 N을 입력하세요. (최대 28)", "10");
         if (topN == null) return null;
 
         Object barStyle = JOptionPane.showInputDialog(
                 parent,
-                "집계 막대 스타일을 선택하세요.",
+                "집계 막대 스타일을 선택하세요. (G: 분리, S: 쌓기, P: 비율, R: 순위쌓기)",
                 "move.py",
                 JOptionPane.QUESTION_MESSAGE,
                 null,
-                new String[]{"G", "S"},
+                new String[]{"G", "S", "P", "R"},
                 "G");
         if (barStyle == null) return null;
 
@@ -432,7 +524,15 @@ public class Main {
 
     private static void appendLog(String text) {
         txtLog.append(text + System.lineSeparator());
+        int excess = txtLog.getDocument().getLength() - MAX_LOG_CHARS;
+        if (excess > 0) {
+            txtLog.replaceRange("", 0, excess);
+        }
         txtLog.setCaretPosition(txtLog.getDocument().getLength());
+    }
+
+    private static void clearLog() {
+        SwingUtilities.invokeLater(() -> txtLog.setText(""));
     }
 
     private record PostProcessScript(String fileName, ScriptInputProvider inputProvider) {

@@ -1,0 +1,242 @@
+[
+  {
+    "name": "WINTERING",
+    "id_or_ip": "223.39",
+    "nicktype": "비회원",
+    "num": 3,
+    "view": 190,
+    "recom": 0,
+    "reple": 4,
+    "comm": 2
+  },
+  {
+    "name": "ㅇㅇ",
+    "id_or_ip": "67.213",
+    "nicktype": "비회원",
+    "num": 2,
+    "view": 188,
+    "recom": 0,
+    "reple": 3,
+    "comm": 0
+  },
+  {
+    "name": "감자튀김은감튀의복제품이다",
+    "id_or_ip": "hello5839",
+    "nicktype": "고정",
+    "num": 1,
+    "view": 49,
+    "recom": 0,
+    "reple": 0,
+    "comm": 0
+  },
+  {
+    "name": "아이탬의인벤토리",
+    "id_or_ip": "itemi",
+    "nicktype": "고정",
+    "num": 1,
+    "view": 32,
+    "recom": 0,
+    "reple": 0,
+    "comm": 1
+  },
+  {
+    "name": "ㅇㅇ",
+    "id_or_ip": "175.209",
+    "nicktype": "비회원",
+    "num": 1,
+    "view": 39,
+    "recom": 1,
+    "reple": 0,
+    "comm": 0
+  },
+  {
+    "name": "샹피뇽",
+    "id_or_ip": "singlebung1e",
+    "nicktype": "고정",
+    "num": 1,
+    "view": 63,
+    "recom": 0,
+    "reple": 1,
+    "comm": 3
+  },
+  {
+    "name": "ㅇㅇ",
+    "id_or_ip": "1.220",
+    "nicktype": "비회원",
+    "num": 1,
+    "view": 69,
+    "recom": 0,
+    "reple": 1,
+    "comm": 0
+  },
+  {
+    "name": "ㅇㅇ",
+    "id_or_ip": "shorts4064",
+    "nicktype": "비고정",
+    "num": 1,
+    "view": 99,
+    "recom": 0,
+    "reple": 3,
+    "comm": 2
+  },
+  {
+    "name": "어부",
+    "id_or_ip": "yungwrld",
+    "nicktype": "고정",
+    "num": 1,
+    "view": 87,
+    "recom": 0,
+    "reple": 1,
+    "comm": 5
+  },
+  {
+    "name": "ㅇㅇ",
+    "id_or_ip": "58.120",
+    "nicktype": "비회원",
+    "num": 1,
+    "view": 60,
+    "recom": 0,
+    "reple": 0,
+    "comm": 0
+  },
+  {
+    "name": "루리♡",
+    "id_or_ip": "manager2297",
+    "nicktype": "비고정",
+    "num": 1,
+    "view": 77,
+    "recom": 0,
+    "reple": 2,
+    "comm": 1
+  },
+  {
+    "name": "일리비션",
+    "id_or_ip": "219.251",
+    "nicktype": "비회원",
+    "num": 1,
+    "view": 75,
+    "recom": 0,
+    "reple": 1,
+    "comm": 0
+  },
+  {
+    "name": "왕치킨",
+    "id_or_ip": "ours7994",
+    "nicktype": "비고정",
+    "num": 1,
+    "view": 104,
+    "recom": 0,
+    "reple": 0,
+    "comm": 0
+  },
+  {
+    "name": "잼민이",
+    "id_or_ip": "1.238",
+    "nicktype": "비회원",
+    "num": 1,
+    "view": 153,
+    "recom": 1,
+    "reple": 3,
+    "comm": 0
+  },
+  {
+    "name": "멍멍",
+    "id_or_ip": "stem1684",
+    "nicktype": "비고정",
+    "num": 1,
+    "view": 153,
+    "recom": 0,
+    "reple": 5,
+    "comm": 2
+  },
+  {
+    "name": "Diddy",
+    "id_or_ip": "giraffe2818",
+    "nicktype": "고정",
+    "num": 1,
+    "view": 138,
+    "recom": 0,
+    "reple": 0,
+    "comm": 0
+  },
+  {
+    "name": "잼민이",
+    "id_or_ip": "211.119",
+    "nicktype": "비회원",
+    "num": 1,
+    "view": 95,
+    "recom": 0,
+    "reple": 0,
+    "comm": 0
+  },
+  {
+    "name": "엽떡 먹고싶다",
+    "id_or_ip": "211.205",
+    "nicktype": "비고정",
+    "num": 0,
+    "view": 0,
+    "recom": 0,
+    "reple": 0,
+    "comm": 1
+  },
+  {
+    "name": "부엉이",
+    "id_or_ip": "223.62",
+    "nicktype": "비고정",
+    "num": 0,
+    "view": 0,
+    "recom": 0,
+    "reple": 0,
+    "comm": 1
+  },
+  {
+    "name": "JayK",
+    "id_or_ip": "summer2714",
+    "nicktype": "고정",
+    "num": 0,
+    "view": 0,
+    "recom": 0,
+    "reple": 0,
+    "comm": 3
+  },
+  {
+    "name": "ㅇㅇ",
+    "id_or_ip": "tube8675",
+    "nicktype": "비고정",
+    "num": 0,
+    "view": 0,
+    "recom": 0,
+    "reple": 0,
+    "comm": 1
+  },
+  {
+    "name": "ㅇㅇ",
+    "id_or_ip": "chorus0562",
+    "nicktype": "비고정",
+    "num": 0,
+    "view": 0,
+    "recom": 0,
+    "reple": 0,
+    "comm": 1
+  },
+  {
+    "name": "wintering",
+    "id_or_ip": "1.220",
+    "nicktype": "비고정",
+    "num": 0,
+    "view": 0,
+    "recom": 0,
+    "reple": 0,
+    "comm": 1
+  },
+  {
+    "name": "ㅇㅇ",
+    "id_or_ip": "roast0824",
+    "nicktype": "비고정",
+    "num": 0,
+    "view": 0,
+    "recom": 0,
+    "reple": 0,
+    "comm": 1
+  }
+]

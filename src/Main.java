@@ -3,6 +3,7 @@ import java.awt.*;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import crawler.*;
@@ -43,6 +44,15 @@ public class Main {
         JTextField txtId = new JTextField("");
         JTextField txtStart = new JTextField("1");
         JTextField txtEnd = new JTextField("1");
+        JLabel lblStartInput = new JLabel(" Start page:");
+        JLabel lblEndInput = new JLabel(" End page:");
+
+        JComboBox<String> rangeModeBox = new JComboBox<>();
+        rangeModeBox.addItem("PAGE");
+        rangeModeBox.addItem("DATE");
+        rangeModeBox.setSelectedItem("PAGE");
+        JTextField txtStartDate = new JTextField(LocalDate.now().minusDays(7).toString());
+        JTextField txtEndDate = new JTextField(LocalDate.now().toString());
 
         JComboBox<String> typeBox = new JComboBox<>();
         typeBox.addItem("main");
@@ -67,6 +77,9 @@ public class Main {
         Map<JCheckBox, PostProcessScript> scriptChecks = new LinkedHashMap<>();
 
         inputPanel.add(new JLabel(" TYPE:")); inputPanel.add(typeBox);
+        inputPanel.add(new JLabel(" Range mode:")); inputPanel.add(rangeModeBox);
+        inputPanel.add(new JLabel(" Start date:")); inputPanel.add(txtStartDate);
+        inputPanel.add(new JLabel(" End date:")); inputPanel.add(txtEndDate);
         inputPanel.add(new JLabel(" 갤러리 ID:")); inputPanel.add(txtId);
         inputPanel.add(new JLabel(" 시작 페이지:")); inputPanel.add(txtStart);
         inputPanel.add(new JLabel(" 종료 페이지:")); inputPanel.add(txtEnd);
@@ -131,6 +144,16 @@ public class Main {
             threadBox.setEnabled(includeComments);
         });
 
+        rangeModeBox.addActionListener(e -> {
+            boolean dateMode = "DATE".equals(rangeModeBox.getSelectedItem());
+            txtStart.setEnabled(!dateMode);
+            txtEnd.setEnabled(!dateMode);
+            txtStartDate.setEnabled(dateMode);
+            txtEndDate.setEnabled(dateMode);
+        });
+        txtStartDate.setEnabled(false);
+        txtEndDate.setEnabled(false);
+
         btnSelectAll.addActionListener(e -> scriptChecks.keySet().stream()
                 .filter(JCheckBox::isEnabled)
                 .forEach(checkBox -> checkBox.setSelected(true)));
@@ -181,16 +204,31 @@ public class Main {
 
                     String type = (String) typeBox.getSelectedItem();
                     String id = txtId.getText().trim();
-                    int start = Integer.parseInt(txtStart.getText().trim());
-                    int end = Integer.parseInt(txtEnd.getText().trim());
+                    String rangeMode = String.valueOf(rangeModeBox.getSelectedItem());
+                    boolean dateMode = "DATE".equals(rangeMode);
+                    int start = 0;
+                    int end = 0;
+                    LocalDate startDate = null;
+                    LocalDate endDate = null;
+                    if (dateMode) {
+                        startDate = LocalDate.parse(txtStartDate.getText().trim());
+                        endDate = LocalDate.parse(txtEndDate.getText().trim());
+                    } else {
+                        start = Integer.parseInt(txtStart.getText().trim());
+                        end = Integer.parseInt(txtEnd.getText().trim());
+                    }
                     int threads = (int) threadBox.getSelectedItem();
                     boolean includeComments = "댓글까지 진행".equals(runScopeBox.getSelectedItem());
 
                     if (id.isEmpty()) {
                         throw new IllegalArgumentException("갤러리 ID를 입력하세요.");
                     }
-                    if (start <= 0 || end < start) {
+                    if (!dateMode && (start <= 0 || end < start)) {
                         throw new IllegalArgumentException("페이지 범위가 올바르지 않습니다.");
+                    }
+
+                    if (dateMode && endDate.isBefore(startDate)) {
+                        throw new IllegalArgumentException("End date must be the same as or after start date.");
                     }
 
                     long startTime = System.currentTimeMillis();
@@ -198,13 +236,24 @@ public class Main {
                     System.out.println("===== 실행 설정 =====");
                     System.out.println("TYPE: " + type);
                     System.out.println("ID: " + id);
+                    System.out.println("Range mode: " + rangeMode);
+                    if (dateMode) {
+                        System.out.println("Date range: " + startDate + " ~ " + endDate);
+                    } else {
+                        System.out.println("Page range: " + start + " ~ " + end);
+                    }
                     System.out.println("Threads: " + threads);
                     System.out.println("Scope: " + (includeComments ? "페이지+댓글" : "페이지만"));
-                    Path runDir = createRunDirectory(id, type, start, end, includeComments);
+                    Path runDir = dateMode
+                            ? createDateRunDirectory(id, type, startDate, endDate, includeComments)
+                            : createRunDirectory(id, type, start, end, includeComments);
                     System.out.println("Output: " + runDir.toAbsolutePath());
 
                     lblStatus.setText("상태: [1/3] 페이지 목록 수집 중...");
-                    CrawlerResult result = page_parser.Crawler(id, type, start, end, 60);
+                    CrawlerResult result = dateMode
+                            ? page_parser.CrawlerByDate(id, type, startDate, endDate, 60)
+                            : page_parser.Crawler(id, type, start, end, 60);
+                    System.out.println("Detected pages: " + result.startPage + " ~ " + result.endPage);
                     lblPage.setText("페이지 진행: 수집 완료");
 
                     if (!result.gallType.isBlank() && !result.gallType.equals(type)) {
@@ -241,7 +290,8 @@ public class Main {
                     analyzer.saveUserLog(result.authorBox, result.IDBox, result.IpBox, result.DayBox, runDir.resolve("daily-data.txt").toString());
                     analyzer.textprinter(commsub.Days, runDir.resolve("date-data-comment.txt").toString());
                     analyzer.saveUserLog(commsub.Names, commsub.IDs, commsub.Ips, commsub.Days, runDir.resolve("daily-data-comment.txt").toString());
-                    writeRunMetadata(runDir, id, type, start, end, threads, includeComments, result, commsub, startTime);
+                    writeRunMetadata(runDir, id, type, rangeMode, start, end, startDate, endDate,
+                            threads, includeComments, result, commsub, startTime);
                     mirrorLatestSourceOutputs(runDir);
 
                     System.out.println("총소요: " + (System.currentTimeMillis() - startTime) / 1000 + "초");
@@ -347,20 +397,44 @@ public class Main {
         return runDir;
     }
 
+    private static Path createDateRunDirectory(String id, String type, LocalDate startDate, LocalDate endDate,
+                                               boolean includeComments) throws IOException {
+        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+        String scope = includeComments ? "comments" : "pages";
+        String folderName = String.format(
+                "%s_%s_%s_d%s-%s_%s",
+                timestamp,
+                sanitizePathPart(id),
+                sanitizePathPart(type),
+                sanitizePathPart(startDate.toString()),
+                sanitizePathPart(endDate.toString()),
+                scope
+        );
+        Path runDir = Paths.get(System.getProperty("user.dir"), "runs", folderName).toAbsolutePath().normalize();
+        Files.createDirectories(runDir);
+        return runDir;
+    }
+
     private static String sanitizePathPart(String value) {
         String sanitized = value == null ? "" : value.replaceAll("[^a-zA-Z0-9._-]", "_");
         return sanitized.isBlank() ? "unknown" : sanitized;
     }
 
-    private static void writeRunMetadata(Path runDir, String id, String type, int start, int end, int threads,
-                                         boolean includeComments, CrawlerResult result, subResult commsub,
-                                         long startTime) throws IOException {
+    private static void writeRunMetadata(Path runDir, String id, String type, String rangeMode,
+                                         int start, int end, LocalDate startDate, LocalDate endDate,
+                                         int threads, boolean includeComments, CrawlerResult result,
+                                         subResult commsub, long startTime) throws IOException {
         List<String> lines = List.of(
                 "created_at=" + LocalDateTime.now().format(DateTimeFormatter.ISO_LOCAL_DATE_TIME),
                 "id=" + id,
                 "type=" + type,
-                "start_page=" + start,
-                "end_page=" + end,
+                "range_mode=" + rangeMode,
+                "input_start_page=" + ("DATE".equals(rangeMode) ? "" : start),
+                "input_end_page=" + ("DATE".equals(rangeMode) ? "" : end),
+                "input_start_date=" + ("DATE".equals(rangeMode) ? startDate : ""),
+                "input_end_date=" + ("DATE".equals(rangeMode) ? endDate : ""),
+                "detected_start_page=" + result.startPage,
+                "detected_end_page=" + result.endPage,
                 "comment_threads=" + threads,
                 "include_comments=" + includeComments,
                 "posts=" + result.IDBox.size(),

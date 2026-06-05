@@ -6,9 +6,13 @@ crawler\comment_Parser.class
 crawler\page_parser.class
 Main$1.class
 crawler\CrawlerResult.class
+crawler\page_parser$NeighborPostedDates.class
+crawler\page_parser$DateRange.class
 crawler\SimpleRateLimiter.class
 Main.class
+crawler\page_parser$DatePageRange.class
 crawler\page_parser$GalleryConfig.class
+crawler\page_parser$PageDateSpan.class
 counter\MetaTextWriter.class
 counter\CustomAnalyzer.class
 counter\PostMeta.class

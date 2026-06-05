@@ -117,11 +117,12 @@ public class comment_Parser {
                                             if (pct > 20) pers.add(rps);
 
                                             double remaining = (targets.size() - done) / rps;
-
-                                            System.out.printf(
-                                                    "\r진행: %d/%d (%.2f%%), %.2f r/s, 남은 %d초",
-                                                    done, targets.size(), pct, rps, (int) remaining
-                                            );
+                                            if (done%10==0) {
+                                                System.out.printf(
+                                                        "\r진행: %d/%d (%.2f%%), %.2f r/s, 남은 %d초",
+                                                        done, targets.size(), pct, rps, (int) remaining
+                                                );
+                                            }
                                         }
 
                             }).join();

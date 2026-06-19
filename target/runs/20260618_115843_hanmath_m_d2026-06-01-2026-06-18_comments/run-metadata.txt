@@ -1,0 +1,16 @@
+created_at=2026-06-18T12:05:40.2899831
+id=hanmath
+type=m
+range_mode=DATE
+input_start_page=
+input_end_page=
+input_start_date=2026-06-01
+input_end_date=2026-06-18
+detected_start_page=1
+detected_end_page=1914
+comment_threads=16
+include_comments=true
+posts=95688
+comment_targets=54150
+comments=232731
+elapsed_seconds=417

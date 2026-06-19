@@ -13,6 +13,8 @@ Main.class
 crawler\page_parser$DatePageRange.class
 crawler\page_parser$GalleryConfig.class
 crawler\page_parser$PageDateSpan.class
+Main$SpeedChartPanel.class
 counter\MetaTextWriter.class
+Main$GalleryCandidate.class
 counter\CustomAnalyzer.class
 counter\PostMeta.class

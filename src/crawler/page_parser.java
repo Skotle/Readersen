@@ -43,6 +43,85 @@ public class page_parser {
         return crawlResolvedRange(ID, Gall, galleryConfig, pageRange.startPage(), pageRange.endPage(), concurrency, dateRange);
     }
 
+    public static CrawlerResult CrawlerAll(String ID, String Gall, int concurrency) throws InterruptedException {
+        GalleryConfig galleryConfig = resolveGalleryConfig(ID, Gall);
+        int lastPage = resolveLastPage(ID, galleryConfig);
+        System.out.println("All page search: page 1 ~ " + lastPage);
+        return crawlResolvedRange(ID, Gall, galleryConfig, 1, lastPage, concurrency, null);
+    }
+
+    private static int resolveLastPage(String id, GalleryConfig config) throws InterruptedException {
+        OptionalInt pageEnd = fetchLastPageNumber(id, config);
+        if (pageEnd.isPresent()) {
+            return Math.max(1, pageEnd.getAsInt());
+        }
+
+        if (!fetchPageHasArticlesWithRetry(id, config, 1)) {
+            return 1;
+        }
+
+        int low = 1;
+        int high = 2;
+        while (true) {
+            if (!fetchPageHasArticlesWithRetry(id, config, high)) {
+                return findLastExistingPageByFetch(id, config, low, high);
+            }
+            low = high;
+            int nextHigh = safeDoublePage(high);
+            if (nextHigh == high) {
+                return high;
+            }
+            high = nextHigh;
+        }
+    }
+
+    private static int findLastExistingPageByFetch(String id, GalleryConfig config, int knownExistingPage,
+                                                   int missingPage) throws InterruptedException {
+        int low = knownExistingPage;
+        int high = missingPage;
+        while (low + 1 < high) {
+            int mid = low + (high - low) / 2;
+            if (fetchPageHasArticlesWithRetry(id, config, mid)) {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        return low;
+    }
+
+    private static boolean fetchPageHasArticlesWithRetry(String id, GalleryConfig config, int page) throws InterruptedException {
+        int retries = 3;
+        while (retries-- > 0) {
+            try {
+                waitGlobalCooldown();
+                Document doc = fetchListDocument(config.baseUrl() + "&page=" + page, config.type(), id);
+                return hasNormalArticleRows(doc, config.subjectSelector());
+            } catch (Exception e) {
+                if (isNotFound(e)) {
+                    return false;
+                }
+                if (retries == 0) {
+                    throw new IllegalArgumentException("Failed to probe page " + page + ": " + e.getMessage(), e);
+                }
+                if (isBlockingResponse(e)) {
+                    applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS * (4 - retries));
+                }
+                Thread.sleep(ThreadLocalRandom.current().nextInt(500, 1201));
+            }
+        }
+        return false;
+    }
+
+    private static boolean hasNormalArticleRows(Document doc, String subjectSelector) {
+        for (Element tag : doc.select("tr.ub-content")) {
+            if (isNormalArticleRow(tag, subjectSelector)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static CrawlerResult crawlResolvedRange(String ID, String Gall, GalleryConfig galleryConfig,
                                                     int start, int end, int concurrency, DateRange dateRange) throws InterruptedException {
         ArrayList<String> skipSubjects = new ArrayList<>(Arrays.asList("고정", "공지", "설문", "AD"));
@@ -99,7 +178,7 @@ public class page_parser {
 
                         for (Element tag : trList) {
                             Element subjectTd = tag.selectFirst(subtag);
-                            if (subjectTd != null && !skipSubjects.contains(subjectTd.text().trim())) {
+                            if (isNormalArticleRow(tag, subtag) && !skipSubjects.contains(subjectTd.text().trim())) {
 
                                 Element writerTd = tag.selectFirst("td.gall_writer");
 
@@ -119,8 +198,6 @@ public class page_parser {
                                 Element reple = tag.selectFirst("span.reply_num");
                                 Element geulnum = tag.selectFirst("td.gall_num");
                                 String geulnumText = geulnum != null ? geulnum.text().trim() : "";
-
-                                if (geulnumText.isEmpty() || geulnumText.equals("-")) continue;
 
                                 Element day = tag.selectFirst("td.gall_date");
                                 LocalDateTime postDate = parsePostDate(day);
@@ -197,8 +274,14 @@ public class page_parser {
         LocalDate resolvedStart = resolveStartBoundaryDate(id, config, requestedStart, cache);
         LocalDate resolvedEnd = resolveEndBoundaryDate(id, config, requestedEnd, cache);
 
+        if (resolvedStart == null) {
+            resolvedStart = resolveDateFromCachedSpans(cache, requestedStart, true);
+        }
+        if (resolvedEnd == null) {
+            resolvedEnd = resolveDateFromCachedSpans(cache, requestedEnd, false);
+        }
         if (resolvedStart == null || resolvedEnd == null) {
-            throw new IllegalArgumentException("No dated posts were found.");
+            throw new IllegalArgumentException("No dated posts were found after probing pages.");
         }
 
         if (resolvedStart.isAfter(resolvedEnd)) {
@@ -213,6 +296,42 @@ public class page_parser {
         }
 
         return new DateRange(resolvedStart.atStartOfDay(), resolvedEnd.atTime(LocalTime.MAX));
+    }
+
+    private static LocalDate resolveDateFromCachedSpans(Map<Integer, Optional<PageDateSpan>> cache,
+                                                        LocalDate targetDate, boolean preferAfter) {
+        LocalDate preferred = null;
+        LocalDate closest = null;
+        long closestDistance = Long.MAX_VALUE;
+
+        for (Optional<PageDateSpan> optionalSpan : cache.values()) {
+            if (optionalSpan.isEmpty()) {
+                continue;
+            }
+
+            PageDateSpan span = optionalSpan.get();
+            LocalDate[] candidates = {
+                    span.newest().toLocalDate(),
+                    span.oldest().toLocalDate()
+            };
+            for (LocalDate candidate : candidates) {
+                if (preferAfter) {
+                    if (!candidate.isBefore(targetDate) && (preferred == null || candidate.isBefore(preferred))) {
+                        preferred = candidate;
+                    }
+                } else if (!candidate.isAfter(targetDate) && (preferred == null || candidate.isAfter(preferred))) {
+                    preferred = candidate;
+                }
+
+                long distance = Math.abs(ChronoUnit.DAYS.between(targetDate, candidate));
+                if (closest == null || distance < closestDistance) {
+                    closest = candidate;
+                    closestDistance = distance;
+                }
+            }
+        }
+
+        return preferred != null ? preferred : closest;
     }
 
     private static LocalDate resolveStartBoundaryDate(String id, GalleryConfig config, LocalDate targetDate,
@@ -276,13 +395,13 @@ public class page_parser {
         PageDateSpan firstSpan = getCachedDateSpan(id, config, 1, cache).orElseThrow(
                 () -> new IllegalArgumentException("No dated posts were found on page 1.")
         );
-        OptionalInt knownLastPage = fetchLastPageNumber(id, config);
+        OptionalInt knownLastPage = OptionalInt.empty();
 
         Set<Integer> candidatePages = new LinkedHashSet<>();
         if (targetDate.atStartOfDay().isAfter(firstSpan.newest())) {
             addPageCandidate(candidatePages, 1);
             addPageCandidate(candidatePages, 2);
-            return buildNeighborPostedDates(id, config, targetDate, candidatePages);
+            return buildNeighborPostedDates(id, config, targetDate, candidatePages, cache);
         }
 
         LocalDateTime targetEnd = targetDate.atTime(LocalTime.MAX);
@@ -292,7 +411,7 @@ public class page_parser {
             if (targetEnd.isBefore(lastSpan.oldest())) {
                 addPageCandidate(candidatePages, lastPage - 1);
                 addPageCandidate(candidatePages, lastPage);
-                return buildNeighborPostedDates(id, config, targetDate, candidatePages);
+                return buildNeighborPostedDates(id, config, targetDate, candidatePages, cache);
             }
         }
 
@@ -307,15 +426,20 @@ public class page_parser {
                 }
                 addPageCandidate(candidatePages, high - 1);
                 addPageCandidate(candidatePages, high);
-                return buildNeighborPostedDates(id, config, targetDate, candidatePages);
+                return buildNeighborPostedDates(id, config, targetDate, candidatePages, cache);
             }
 
             Optional<PageDateSpan> span = getCachedDateSpan(id, config, high, cache);
             if (span.isEmpty()) {
                 int lastPage = findLastExistingPage(id, config, low, high, cache);
+                Optional<PageDateSpan> lastSpan = getCachedDateSpan(id, config, lastPage, cache);
+                if (lastSpan.isPresent() && !lastSpan.get().oldest().isAfter(targetEnd)) {
+                    high = lastPage;
+                    break;
+                }
                 addPageCandidate(candidatePages, lastPage - 1);
                 addPageCandidate(candidatePages, lastPage);
-                return buildNeighborPostedDates(id, config, targetDate, candidatePages);
+                return buildNeighborPostedDates(id, config, targetDate, candidatePages, cache);
             }
             if (!span.get().oldest().isAfter(targetEnd)) {
                 break;
@@ -325,7 +449,7 @@ public class page_parser {
             if (nextHigh == high) {
                 addPageCandidate(candidatePages, high - 1);
                 addPageCandidate(candidatePages, high);
-                return buildNeighborPostedDates(id, config, targetDate, candidatePages);
+                return buildNeighborPostedDates(id, config, targetDate, candidatePages, cache);
             }
             high = nextHigh;
         }
@@ -343,7 +467,7 @@ public class page_parser {
         addPageCandidate(candidatePages, high - 1);
         addPageCandidate(candidatePages, high);
         addPageCandidate(candidatePages, high + 1);
-        return buildNeighborPostedDates(id, config, targetDate, candidatePages);
+        return buildNeighborPostedDates(id, config, targetDate, candidatePages, cache);
     }
 
     private static void addPageCandidate(Set<Integer> candidatePages, int page) {
@@ -353,11 +477,31 @@ public class page_parser {
     }
 
     private static NeighborPostedDates buildNeighborPostedDates(String id, GalleryConfig config, LocalDate targetDate,
-                                                                Set<Integer> candidatePages) throws InterruptedException {
+                                                                Set<Integer> candidatePages,
+                                                                Map<Integer, Optional<PageDateSpan>> cache)
+            throws InterruptedException {
         LocalDate beforeOrSame = null;
         LocalDate afterOrSame = null;
 
         for (int page : candidatePages) {
+            Optional<PageDateSpan> span = getCachedDateSpan(id, config, page, cache);
+            if (span.isPresent()) {
+                LocalDate newest = span.get().newest().toLocalDate();
+                LocalDate oldest = span.get().oldest().toLocalDate();
+                if (!newest.isAfter(targetDate) && (beforeOrSame == null || newest.isAfter(beforeOrSame))) {
+                    beforeOrSame = newest;
+                }
+                if (!oldest.isAfter(targetDate) && (beforeOrSame == null || oldest.isAfter(beforeOrSame))) {
+                    beforeOrSame = oldest;
+                }
+                if (!newest.isBefore(targetDate) && (afterOrSame == null || newest.isBefore(afterOrSame))) {
+                    afterOrSame = newest;
+                }
+                if (!oldest.isBefore(targetDate) && (afterOrSame == null || oldest.isBefore(afterOrSame))) {
+                    afterOrSame = oldest;
+                }
+            }
+
             for (LocalDate postDate : fetchPagePostDatesWithRetry(id, config, page)) {
                 if (!postDate.isAfter(targetDate) && (beforeOrSame == null || postDate.isAfter(beforeOrSame))) {
                     beforeOrSame = postDate;
@@ -397,10 +541,9 @@ public class page_parser {
     private static Set<LocalDate> extractPagePostDates(Document doc, String subjectSelector) {
         Set<LocalDate> postDates = new LinkedHashSet<>();
         for (Element tag : doc.select("tr.ub-content")) {
-            Element subjectTd = tag.selectFirst(subjectSelector);
             Element geulnum = tag.selectFirst("td.gall_num");
             String geulnumText = geulnum != null ? geulnum.text().trim() : "";
-            if (subjectTd == null || geulnumText.isEmpty() || geulnumText.equals("-")) {
+            if (!isNormalArticleRow(tag, subjectSelector)) {
                 continue;
             }
 
@@ -445,18 +588,6 @@ public class page_parser {
             return pageEndNumber;
         }
 
-        boolean hasNextPageGroup = doc.selectFirst("a.page_next[href], a[class*=page_next][href]") != null;
-        int maxVisiblePage = 1;
-        for (Element link : doc.select("a[href*=page=]")) {
-            OptionalInt pageNumber = parsePageNumberFromHref(link.attr("href"));
-            if (pageNumber.isPresent()) {
-                maxVisiblePage = Math.max(maxVisiblePage, pageNumber.getAsInt());
-            }
-        }
-
-        if (!hasNextPageGroup && maxVisiblePage > 1) {
-            return OptionalInt.of(maxVisiblePage);
-        }
         return OptionalInt.empty();
     }
 
@@ -491,7 +622,7 @@ public class page_parser {
         PageDateSpan firstSpan = getCachedDateSpan(id, config, 1, cache).orElseThrow(
                 () -> new IllegalArgumentException("No dated posts were found on page 1.")
         );
-        OptionalInt knownLastPage = fetchLastPageNumber(id, config);
+        OptionalInt knownLastPage = OptionalInt.empty();
 
         if (firstSpan.newest().isBefore(dateRange.start())) {
             throw new IllegalArgumentException("No posts exist in the selected date range.");
@@ -509,6 +640,12 @@ public class page_parser {
                 }
                 Optional<PageDateSpan> span = getCachedDateSpan(id, config, high, cache);
                 if (span.isEmpty()) {
+                    int lastPage = findLastExistingPage(id, config, low, high, cache);
+                    Optional<PageDateSpan> lastSpan = getCachedDateSpan(id, config, lastPage, cache);
+                    if (lastSpan.isPresent() && !lastSpan.get().oldest().isAfter(dateRange.end())) {
+                        high = lastPage;
+                        break;
+                    }
                     throw new IllegalArgumentException("No posts exist before or on the selected end date.");
                 }
                 if (!span.get().oldest().isAfter(dateRange.end())) {
@@ -560,8 +697,13 @@ public class page_parser {
             Optional<PageDateSpan> span = getCachedDateSpan(id, config, high, cache);
             if (span.isEmpty()) {
                 int lastPage = findLastExistingPage(id, config, low, high, cache);
-                System.out.println("Start date boundary was not found. Using gallery last page: " + lastPage);
-                return new DatePageRange(startPage, lastPage);
+                PageDateSpan lastSpan = getCachedDateSpan(id, config, lastPage, cache).orElse(startSpan);
+                if (!lastSpan.newest().isBefore(dateRange.start())) {
+                    System.out.println("Start date boundary was not found. Using gallery last page: " + lastPage);
+                    return new DatePageRange(startPage, lastPage);
+                }
+                high = lastPage;
+                break;
             }
             if (span.get().newest().isBefore(dateRange.start())) {
                 break;
@@ -656,10 +798,9 @@ public class page_parser {
         LocalDateTime newest = null;
         LocalDateTime oldest = null;
         for (Element tag : doc.select("tr.ub-content")) {
-            Element subjectTd = tag.selectFirst(subjectSelector);
             Element geulnum = tag.selectFirst("td.gall_num");
             String geulnumText = geulnum != null ? geulnum.text().trim() : "";
-            if (subjectTd == null || geulnumText.isEmpty() || geulnumText.equals("-")) {
+            if (!isNormalArticleRow(tag, subjectSelector)) {
                 continue;
             }
 
@@ -864,6 +1005,45 @@ public class page_parser {
         } catch (Exception e) {
             return 0;
         }
+    }
+
+    private static boolean isArticleNumber(String text) {
+        return text != null && text.trim().matches("\\d+");
+    }
+
+    private static boolean isNormalArticleRow(Element tag, String subjectSelector) {
+        Element number = tag.selectFirst("td.gall_num");
+        if (number == null || !isArticleNumber(number.text())) {
+            return false;
+        }
+
+        String rowClass = tag.className() == null ? "" : tag.className().toLowerCase(Locale.ROOT);
+        if (rowClass.contains("notice") || rowClass.contains("ad")) {
+            return false;
+        }
+
+        Element subject = tag.selectFirst(subjectSelector);
+        if (subject == null) {
+            return false;
+        }
+        if (isExcludedListLabel(subject.text())) {
+            return false;
+        }
+
+        Element category = tag.selectFirst("td.gall_subject");
+        return category == null || !isExcludedListLabel(category.text());
+    }
+
+    private static boolean isExcludedListLabel(String text) {
+        if (text == null) {
+            return false;
+        }
+
+        String normalized = text.trim();
+        return normalized.equals("AD")
+                || normalized.equals("\uace0\uc815")
+                || normalized.equals("\uacf5\uc9c0")
+                || normalized.equals("\uc124\ubb38");
     }
 
     private static boolean isBlockingResponse(Exception e) {

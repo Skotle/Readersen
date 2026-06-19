@@ -14,13 +14,11 @@ import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public class page_parser {
-    private static final int BLOCK_COOLDOWN_BASE_MS = 5000;
     private static final DateTimeFormatter OUTPUT_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static volatile long globalCooldownUntil = 0L;
 
     public static CrawlerResult Crawler(String ID, String Gall, int start, int end, int concurrency) throws InterruptedException {
         GalleryConfig galleryConfig = resolveGalleryConfig(ID, Gall);
@@ -94,7 +92,6 @@ public class page_parser {
         int retries = 3;
         while (retries-- > 0) {
             try {
-                waitGlobalCooldown();
                 Document doc = fetchListDocument(config.baseUrl() + "&page=" + page, config.type(), id);
                 return hasNormalArticleRows(doc, config.subjectSelector());
             } catch (Exception e) {
@@ -104,10 +101,6 @@ public class page_parser {
                 if (retries == 0) {
                     throw new IllegalArgumentException("Failed to probe page " + page + ": " + e.getMessage(), e);
                 }
-                if (isBlockingResponse(e)) {
-                    applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS * (4 - retries));
-                }
-                Thread.sleep(ThreadLocalRandom.current().nextInt(500, 1201));
             }
         }
         return false;
@@ -143,9 +136,8 @@ public class page_parser {
         ExecutorService executor = Executors.newFixedThreadPool(effectiveConcurrency);
         List<Future<Void>> futures = new ArrayList<>();
         AtomicInteger completedPages = new AtomicInteger(0);
-
-        // 쿨다운 상태 관리 변수
-        AtomicBoolean isPaused = new AtomicBoolean(false);
+        AtomicReference<LocalDateTime> processedOldestDate = new AtomicReference<>();
+        AtomicReference<LocalDateTime> processedNewestDate = new AtomicReference<>();
 
         String baseurl = galleryConfig.baseUrl();
         String subtag = galleryConfig.subjectSelector();
@@ -154,23 +146,17 @@ public class page_parser {
         if (!actualGallType.equals(Gall)) {
             System.out.println("갤러리 타입 자동 보정: " + Gall + " -> " + actualGallType);
         }
+        if (dateRange != null) {
+            System.out.println("날짜 모드 순차 요청: page " + start + " ~ " + end);
+        }
 
         for (int page = start; page <= end; page++) {
             final int currentPage = page;
             futures.add(executor.submit(() -> {
-                int retries = 3;
-                while (retries-- > 0) {
+                try {
+                    int retries = 3;
+                    while (retries-- > 0) {
                     try {
-                        waitGlobalCooldown();
-
-                        // 스레드들이 같은 순간에 몰리지 않게 요청 전 지터를 둔다.
-                        Thread.sleep(ThreadLocalRandom.current().nextInt(300, 901));
-
-                        // 다른 스레드에 의해 글로벌 쿨다운(에러 발생 등) 중인지 체크
-                        while (isPaused.get()) {
-                            Thread.sleep(100);
-                        }
-
                         String key = baseurl + "&page=" + currentPage;
                         Document doc = fetchListDocument(key, actualGallType, ID);
 
@@ -204,6 +190,12 @@ public class page_parser {
                                 if (dateRange != null && (postDate == null || !dateRange.includes(postDate))) {
                                     continue;
                                 }
+                                if (dateRange != null) {
+                                    processedOldestDate.accumulateAndGet(postDate,
+                                            (current, value) -> current == null || value.isBefore(current) ? value : current);
+                                    processedNewestDate.accumulateAndGet(postDate,
+                                            (current, value) -> current == null || value.isAfter(current) ? value : current);
+                                }
                                 String postDateText = postDate != null
                                         ? postDate.format(OUTPUT_DATE_FORMATTER)
                                         : (day != null ? day.attr("title") : "");
@@ -212,6 +204,7 @@ public class page_parser {
                                 IpBox.add(ip);
                                 IDBox.add(uid);
                                 days.add(postDateText);
+                                CollectionProgress.recordPost(displayName, uid, ip);
                                 ViewBox.add(parseSafeInt(view != null ? view.text() : ""));
                                 RecomBox.add(parseSafeInt(recommend != null ? recommend.text() : ""));
 
@@ -227,7 +220,13 @@ public class page_parser {
                         }
 
                         int done = completedPages.incrementAndGet();
-                        System.out.print("\r페이지 진행: " + done + "/" + (end - start + 1));
+                        String dateProgress = "";
+                        LocalDateTime oldest = processedOldestDate.get();
+                        LocalDateTime newest = processedNewestDate.get();
+                        if (dateRange != null && oldest != null && newest != null) {
+                            dateProgress = " | 날짜 범위: " + oldest.toLocalDate() + " ~ " + newest.toLocalDate();
+                        }
+                        System.out.print("\r페이지 진행: " + done + "/" + (end - start + 1) + dateProgress);
                         break;
 
                     } catch (Exception e) {
@@ -239,19 +238,11 @@ public class page_parser {
                         if (retries == 0) {
                             System.err.println("\n[오류] 페이지 " + currentPage + " 실패: " + e.getMessage());
                         } else {
-                            if (isBlockingResponse(e)) {
-                                applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS * (4 - retries));
-                            }
-
-                            // 에러 발생 시 전체 스레드 흐름을 제어 (쿨다운 게이트)
-                            if (isPaused.compareAndSet(false, true)) {
-                                Thread.sleep(ThreadLocalRandom.current().nextInt(1500, 3501));
-                                isPaused.set(false);
-                            }
                         }
                     }
-                }
-                return null;
+                    }
+                }finally {
+                return null;}
             }));
         }
 
@@ -260,6 +251,7 @@ public class page_parser {
         }
         executor.shutdown();
         System.out.println("\n크롤링 완료.");
+        CollectionProgress.publishNow();
 
         return new CrawlerResult(
                 new ArrayList<>(AuthorBox), new ArrayList<>(IDBox), new ArrayList<>(IpBox),
@@ -519,7 +511,6 @@ public class page_parser {
         int retries = 3;
         while (retries-- > 0) {
             try {
-                waitGlobalCooldown();
                 Document doc = fetchListDocument(config.baseUrl() + "&page=" + page, config.type(), id);
                 return extractPagePostDates(doc, config.subjectSelector());
             } catch (Exception e) {
@@ -529,10 +520,6 @@ public class page_parser {
                 if (retries == 0) {
                     throw new IllegalArgumentException("Failed to inspect page " + page + ": " + e.getMessage(), e);
                 }
-                if (isBlockingResponse(e)) {
-                    applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS * (4 - retries));
-                }
-                Thread.sleep(ThreadLocalRandom.current().nextInt(500, 1201));
             }
         }
         return Set.of();
@@ -559,7 +546,6 @@ public class page_parser {
         int retries = 3;
         while (retries-- > 0) {
             try {
-                waitGlobalCooldown();
                 Document doc = fetchListDocument(config.baseUrl() + "&page=1", config.type(), id);
                 return extractLastPageNumber(doc);
             } catch (Exception e) {
@@ -570,10 +556,6 @@ public class page_parser {
                     System.out.println("Last page number lookup failed: " + e.getMessage());
                     return OptionalInt.empty();
                 }
-                if (isBlockingResponse(e)) {
-                    applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS * (4 - retries));
-                }
-                Thread.sleep(ThreadLocalRandom.current().nextInt(500, 1201));
             }
         }
         return OptionalInt.empty();
@@ -774,7 +756,6 @@ public class page_parser {
         int retries = 3;
         while (retries-- > 0) {
             try {
-                waitGlobalCooldown();
                 Document doc = fetchListDocument(config.baseUrl() + "&page=" + page, config.type(), id);
                 PageDateSpan span = extractPageDateSpan(doc, config.subjectSelector());
                 return span == null ? Optional.empty() : Optional.of(span);
@@ -785,10 +766,6 @@ public class page_parser {
                 if (retries == 0) {
                     throw new IllegalArgumentException("Failed to probe page " + page + ": " + e.getMessage(), e);
                 }
-                if (isBlockingResponse(e)) {
-                    applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS * (4 - retries));
-                }
-                Thread.sleep(ThreadLocalRandom.current().nextInt(500, 1201));
             }
         }
         return Optional.empty();
@@ -915,10 +892,6 @@ public class page_parser {
                 return config;
             } catch (Exception e) {
                 lastException = e;
-                if (isBlockingResponse(e)) {
-                    applyGlobalCooldown(BLOCK_COOLDOWN_BASE_MS);
-                    waitGlobalCooldown();
-                }
             }
         }
 
@@ -1058,17 +1031,4 @@ public class page_parser {
         return e instanceof HttpStatusException statusException && statusException.getStatusCode() == 404;
     }
 
-    private static void applyGlobalCooldown(long millis) {
-        long jitter = ThreadLocalRandom.current().nextLong(1000, 4001);
-        long until = System.currentTimeMillis() + millis + jitter;
-        globalCooldownUntil = Math.max(globalCooldownUntil, until);
-        System.err.println("\n[차단 방지] 페이지 요청 쿨다운 " + ((millis + jitter) / 1000) + "초");
-    }
-
-    private static void waitGlobalCooldown() throws InterruptedException {
-        long wait = globalCooldownUntil - System.currentTimeMillis();
-        if (wait > 0) {
-            Thread.sleep(wait);
-        }
-    }
 }

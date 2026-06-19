@@ -27,7 +27,8 @@ public class Main {
     private static JLabel lblSpeed   = new JLabel("현재 속도: -");
     private static JLabel lblEta     = new JLabel("남은 시간: -");
     private static final JLabel lblElapsed = new JLabel("경과 시간: 00:00:00");
-    private static final JLabel lblCounts = new JLabel("수집: 글 0 | 댓글 0");
+    private static final JLabel lblCounts = new JLabel("누적: 글 0 | 댓글 0 | 작성자 0");
+    private static final JLabel lblDateRange = new JLabel("날짜 진행: -");
     private static final JProgressBar overallProgress = createProgressBar(3, "실행 대기");
     private static final JProgressBar pageProgress = createProgressBar(1, "페이지 대기");
     private static final JProgressBar commentProgress = createProgressBar(1, "댓글 대기");
@@ -37,10 +38,13 @@ public class Main {
     private static final Pattern FRACTION_PATTERN = Pattern.compile("(\\d+)\\s*/\\s*(\\d+)");
     private static final Pattern SPEED_PATTERN = Pattern.compile("([0-9]+(?:\\.[0-9]+)?)\\s*r/s");
     private static final Pattern ETA_PATTERN = Pattern.compile("남은\\s*(\\d+)초");
+    private static final Pattern DATE_RANGE_PATTERN = Pattern.compile(
+            "날짜 범위:\\s*(\\d{4}-\\d{2}-\\d{2})\\s*~\\s*(\\d{4}-\\d{2}-\\d{2})");
     private static javax.swing.Timer executionTimer;
     private static long executionStartedAt;
     private static int collectedPosts;
     private static int collectedComments;
+    private static int uniqueAuthors;
 
     private static final List<PostProcessScript> POST_PROCESS_SCRIPTS = List.of(
             new PostProcessScript("ExcelPrinter.py", null),
@@ -137,8 +141,10 @@ public class Main {
         lblEta.setFont(boldFont);
         lblEta.setForeground(new Color(150, 80, 0));
         lblElapsed.setFont(boldFont);
-        lblCounts.setFont(boldFont);
+        lblCounts.setFont(boldFont.deriveFont(13f));
         lblCounts.setForeground(new Color(55, 65, 81));
+        lblDateRange.setFont(boldFont.deriveFont(13f));
+        lblDateRange.setForeground(new Color(126, 72, 25));
 
         JPanel statusHeader = new JPanel(new BorderLayout(8, 0));
         statusHeader.add(lblStatus, BorderLayout.CENTER);
@@ -155,7 +161,7 @@ public class Main {
         metricPanel.add(lblCounts);
         metricPanel.add(lblSpeed);
         metricPanel.add(lblEta);
-        metricPanel.add(new JLabel("속도 추이", SwingConstants.RIGHT));
+        metricPanel.add(lblDateRange);
 
         JPanel dashboardCenter = new JPanel(new BorderLayout(8, 6));
         dashboardCenter.add(progressPanel, BorderLayout.NORTH);
@@ -196,6 +202,7 @@ public class Main {
         logScrollPane.setBorder(BorderFactory.createTitledBorder("실행 로그"));
         logScrollPane.setPreferredSize(new Dimension(0, 190));
 
+        CollectionProgress.setListener(Main::updateCollectionDashboard);
         redirectSystemStreams();
 
         runScopeBox.addActionListener(e -> {
@@ -322,6 +329,7 @@ public class Main {
                                     ? createDateRunDirectory(id, type, startDate, endDate, includeComments)
                                     : createRunDirectory(id, type, start, end, includeComments));
                     System.out.println("Output: " + runDir.toAbsolutePath());
+                    prepareDateDashboard(dateMode, startDate, endDate);
 
                     lblStatus.setText("상태: [1/3] 페이지 목록 수집 중...");
                     setExecutionStage(1, "1/3 페이지 목록 수집 중");
@@ -333,6 +341,7 @@ public class Main {
                     System.out.println("Detected pages: " + result.startPage + " ~ " + result.endPage);
                     lblPage.setText("페이지 진행: 수집 완료");
                     completePageDashboard(result);
+                    completeDateDashboard(dateMode, result.DayBox);
 
                     if (!result.gallType.isBlank() && !result.gallType.equals(type)) {
                         type = result.gallType;
@@ -357,7 +366,7 @@ public class Main {
                     }
                     lblSpeed.setText("현재 속도: -");
                     lblEta.setText("남은 시간: -");
-                    completeCommentDashboard(commsub.Names.size(), includeComments && !result.RepleTrueBox.isEmpty());
+                    completeCommentDashboard(includeComments && !result.RepleTrueBox.isEmpty());
 
                     lblStatus.setText("상태: [3/3] 최종 결과 분석 중...");
                     setExecutionStage(3, "3/3 최종 결과 분석 중");
@@ -743,6 +752,7 @@ public class Main {
         executionStartedAt = System.currentTimeMillis();
         collectedPosts = 0;
         collectedComments = 0;
+        uniqueAuthors = 0;
         overallProgress.setForeground(new Color(194, 120, 3));
         overallProgress.setMaximum(3);
         overallProgress.setValue(0);
@@ -759,8 +769,10 @@ public class Main {
         commentProgress.setIndeterminate(false);
         commentProgress.setString("댓글 대기");
         lblElapsed.setText("경과 시간: 00:00:00");
-        lblCounts.setText("수집: 글 0 | 댓글 0");
+        lblCounts.setText("누적: 글 0 | 댓글 0 | 작성자 0");
+        lblDateRange.setText("날짜 진행: -");
         speedChart.reset();
+        CollectionProgress.reset();
     }
 
     private static void startExecutionTimer() {
@@ -804,14 +816,58 @@ public class Main {
     }
 
     private static void completePageDashboard(CrawlerResult result) {
+        CollectionProgress.publishNow();
         SwingUtilities.invokeLater(() -> {
             int totalPages = Math.max(1, result.endPage - result.startPage + 1);
             pageProgress.setIndeterminate(false);
             pageProgress.setMaximum(totalPages);
             pageProgress.setValue(totalPages);
             pageProgress.setString("페이지 " + totalPages + "/" + totalPages + " 완료");
-            collectedPosts = result.IDBox.size();
-            updateCountLabel();
+        });
+    }
+
+    private static void prepareDateDashboard(boolean dateMode, LocalDate startDate, LocalDate endDate) {
+        SwingUtilities.invokeLater(() -> {
+            if (dateMode) {
+                lblDateRange.setText("날짜 진행: 탐색 중 " + startDate + " ~ " + endDate);
+            } else {
+                lblDateRange.setText("날짜 진행: 해당 없음");
+            }
+        });
+    }
+
+    private static void completeDateDashboard(boolean dateMode, List<String> collectedDays) {
+        if (!dateMode) {
+            return;
+        }
+
+        LocalDate oldest = null;
+        LocalDate newest = null;
+        for (String value : collectedDays) {
+            if (value == null || value.length() < 10) {
+                continue;
+            }
+            try {
+                LocalDate date = LocalDate.parse(value.substring(0, 10));
+                if (oldest == null || date.isBefore(oldest)) {
+                    oldest = date;
+                }
+                if (newest == null || date.isAfter(newest)) {
+                    newest = date;
+                }
+            } catch (RuntimeException ignored) {
+                // Ignore malformed legacy date rows while calculating the final display range.
+            }
+        }
+
+        LocalDate finalOldest = oldest;
+        LocalDate finalNewest = newest;
+        SwingUtilities.invokeLater(() -> {
+            if (finalOldest == null || finalNewest == null) {
+                lblDateRange.setText("날짜 진행: 수집 데이터 없음");
+            } else {
+                lblDateRange.setText("날짜 진행: " + finalOldest + " ~ " + finalNewest + " (완료)");
+            }
         });
     }
 
@@ -832,10 +888,9 @@ public class Main {
         });
     }
 
-    private static void completeCommentDashboard(int comments, boolean parsed) {
+    private static void completeCommentDashboard(boolean parsed) {
+        CollectionProgress.publishNow();
         SwingUtilities.invokeLater(() -> {
-            collectedComments = comments;
-            updateCountLabel();
             if (parsed) {
                 commentProgress.setValue(commentProgress.getMaximum());
                 commentProgress.setString("댓글 대상 처리 완료");
@@ -864,7 +919,16 @@ public class Main {
     }
 
     private static void updateCountLabel() {
-        lblCounts.setText("수집: 글 " + collectedPosts + " | 댓글 " + collectedComments);
+        lblCounts.setText("누적: 글 " + collectedPosts + " | 댓글 " + collectedComments + " | 작성자 " + uniqueAuthors);
+    }
+
+    private static void updateCollectionDashboard(CollectionProgress.Snapshot snapshot) {
+        SwingUtilities.invokeLater(() -> {
+            collectedPosts = snapshot.posts();
+            collectedComments = snapshot.comments();
+            uniqueAuthors = snapshot.uniqueAuthors();
+            updateCountLabel();
+        });
     }
 
     private static void redirectSystemStreams() {
@@ -923,10 +987,15 @@ public class Main {
                 if (fraction.find()) {
                     int done = Integer.parseInt(fraction.group(1));
                     int total = Integer.parseInt(fraction.group(2));
+                    lblPage.setText("페이지 진행: " + done + "/" + total);
                     pageProgress.setIndeterminate(false);
                     pageProgress.setMaximum(Math.max(1, total));
                     pageProgress.setValue(Math.min(done, Math.max(1, total)));
                     pageProgress.setString("페이지 " + done + "/" + total);
+                }
+                Matcher dateRange = DATE_RANGE_PATTERN.matcher(clean);
+                if (dateRange.find()) {
+                    lblDateRange.setText("날짜 진행: " + dateRange.group(1) + " ~ " + dateRange.group(2));
                 }
             } else if (clean.startsWith("진행:")) {
                 Matcher fraction = FRACTION_PATTERN.matcher(clean);

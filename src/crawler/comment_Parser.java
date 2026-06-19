@@ -98,13 +98,15 @@ public class comment_Parser {
                                                 default -> "유동";
                                             };
 
+                                            String displayName = nt + name;
                                             allComments.add(new CommentEntry(
-                                                    nt + name,
+                                                    displayName,
                                                     uid,
                                                     ip,
                                                     normalizeDate(date),
                                                     content
                                             ));
+                                            CollectionProgress.recordComment(displayName, uid, ip);
                                         }
 
                                         int done = completed.incrementAndGet();
@@ -187,6 +189,7 @@ public class comment_Parser {
             resultContents.add(e.memo());
         }
 
+        CollectionProgress.publishNow();
         return new subResult(resultNames, resultIDs, resultIps, resultDays, resultContents);
     }
 

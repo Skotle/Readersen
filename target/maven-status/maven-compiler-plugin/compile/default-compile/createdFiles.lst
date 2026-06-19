@@ -4,7 +4,9 @@ crawler\subResult.class
 Main$ScriptInputProvider.class
 crawler\comment_Parser.class
 crawler\page_parser.class
+crawler\CollectionProgress.class
 Main$1.class
+crawler\CollectionProgress$Snapshot.class
 crawler\CrawlerResult.class
 crawler\page_parser$NeighborPostedDates.class
 crawler\page_parser$DateRange.class

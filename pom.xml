@@ -6,7 +6,7 @@
 
     <groupId>org.example</groupId>
     <artifactId>Readersen</artifactId>
-    <version>1.1.5</version>
+    <version>1.2</version>
 
     <properties>
         <maven.compiler.source>23</maven.compiler.source>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Readersen 읽기 전용 SQL 조회 도구">
+  <title>SQL 도구 · Readersen</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="sql-page">
+  <header class="topbar">
+    <a class="brand" href="/">
+      <span class="brand-mark">R</span>
+      <span>READERSEN <b>1.2</b></span>
+    </a>
+    <nav>
+      <a class="nav-link" href="/">데이터 탐색</a>
+      <a class="button button-dark active" href="/sql.html">SQL 도구</a>
+    </nav>
+  </header>
+
+  <main class="page-shell sql-shell">
+    <section class="sql-intro">
+      <div>
+        <p class="eyebrow"><span class="status-dot"></span> READ-ONLY CONSOLE</p>
+      </div>
+      <p>SELECT, WITH, EXPLAIN 쿼리를 지원합니다. 결과는 최대 500행, 실행 시간은 최대 3초로 제한됩니다.</p>
+    </section>
+
+    <div class="sql-layout">
+      <aside class="schema-panel">
+        <div class="aside-heading"><span>DATABASE</span><strong>readersen.sqlite3</strong></div>
+        <div id="schema-list" class="schema-list"><p class="muted">스키마 불러오는 중…</p></div>
+      </aside>
+
+      <section class="console-panel">
+        <div class="query-toolbar">
+          <div class="example-list" aria-label="예제 쿼리">
+            <button data-query="latest">최근 게시물</button>
+            <button data-query="users">활동 사용자</button>
+            <button data-query="daily">일별 요약</button>
+          </div>
+          <span class="shortcut">Ctrl + Enter</span>
+        </div>
+        <div class="editor-wrap">
+          <div class="line-number">1</div>
+          <textarea id="sql-editor" spellcheck="false" aria-label="SQL 쿼리">SELECT
+  nickname,
+  user_key,
+  created_at,
+  view_count,
+  recommend_count,
+  comment_count
+FROM posts
+ORDER BY created_at DESC
+LIMIT 50;</textarea>
+        </div>
+        <div class="runbar">
+          <p id="query-message">실행할 준비가 되었습니다.</p>
+          <button id="run-query" class="button button-primary" type="button">쿼리 실행 <span>▶</span></button>
+        </div>
+
+        <div class="result-panel">
+          <div class="result-heading">
+            <strong>RESULT</strong>
+            <span id="query-stats">아직 실행된 쿼리가 없습니다.</span>
+          </div>
+          <div class="table-wrap sql-results">
+            <table>
+              <thead id="sql-head"></thead>
+              <tbody id="sql-body"></tbody>
+            </table>
+          </div>
+          <div id="sql-empty" class="empty-state">쿼리를 실행하면 결과가 여기에 표시됩니다.</div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/sql.js" defer></script>
+</body>
+</html>

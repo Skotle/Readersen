@@ -47,7 +47,7 @@ public class Main {
     private static int uniqueAuthors;
 
     private static final List<PostProcessScript> POST_PROCESS_SCRIPTS = List.of(
-            new PostProcessScript("ExcelPrinter.py", null),
+            new PostProcessScript("ExcelPrinter.py", Main::askExcelPrinterInput),
             new PostProcessScript("GraphPrinter.py", null),
             new PostProcessScript("GraphPrinter_sub.py", null),
             new PostProcessScript("daily-count.py", Main::askDailyCountInput),
@@ -378,7 +378,10 @@ public class Main {
                     analyzer.printSummary(runDir.resolve("example.txt").toString());
                     analyzer.textprinter(result.DayBox, runDir.resolve("date-data.txt").toString());
                     analyzer.textprinter(commsub.Contents, runDir.resolve("contents_data.txt").toString());
-                    analyzer.saveUserLog(result.authorBox, result.IDBox, result.IpBox, result.DayBox, runDir.resolve("daily-data.txt").toString());
+                    analyzer.saveUserLog(
+                            result.authorBox, result.IDBox, result.IpBox, result.DayBox,
+                            result.viewBox, result.recomBox, result.repleBox,
+                            runDir.resolve("daily-data.txt").toString());
                     analyzer.textprinter(commsub.Days, runDir.resolve("date-data-comment.txt").toString());
                     analyzer.saveUserLog(commsub.Names, commsub.IDs, commsub.Ips, commsub.Days, runDir.resolve("daily-data-comment.txt").toString());
                     writeRunMetadata(runDir, id, type, rangeMode, start, end, startDate, endDate,
@@ -678,6 +681,22 @@ public class Main {
         String start = JOptionPane.showInputDialog(parent, "시작 날짜를 입력하세요. (YYYY-MM-DD)", "daily-count.py", JOptionPane.QUESTION_MESSAGE);
         if (start == null) return null;
         String end = JOptionPane.showInputDialog(parent, "종료 날짜를 입력하세요. (YYYY-MM-DD)", "daily-count.py", JOptionPane.QUESTION_MESSAGE);
+        if (end == null) return null;
+        return List.of(start.trim(), end.trim());
+    }
+
+    private static List<String> askExcelPrinterInput(Component parent) {
+        String start = JOptionPane.showInputDialog(
+                parent,
+                "엑셀에 포함할 시작일을 입력하세요. (YYYY-MM-DD, 전체는 빈칸)",
+                "ExcelPrinter.py",
+                JOptionPane.QUESTION_MESSAGE);
+        if (start == null) return null;
+        String end = JOptionPane.showInputDialog(
+                parent,
+                "엑셀에 포함할 종료일을 입력하세요. (YYYY-MM-DD, 전체는 빈칸)",
+                "ExcelPrinter.py",
+                JOptionPane.QUESTION_MESSAGE);
         if (end == null) return null;
         return List.of(start.trim(), end.trim());
     }

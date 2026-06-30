@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Readersen SQLite 데이터셋 조회기">
+  <title>Readersen 데이터셋</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Readersen 데이터 홈">
+      <span class="brand-mark">R</span>
+      <span>READERSEN <b>1.2</b></span>
+    </a>
+    <nav>
+      <a class="nav-link active" href="/">데이터 탐색</a>
+      <a class="button button-dark" href="/sql.html">SQL 도구 <span>↗</span></a>
+    </nav>
+  </header>
+
+  <main class="page-shell">
+    <section class="stats-grid" aria-label="데이터셋 요약">
+      <article class="stat-card accent"><span>POST RECORDS</span><strong id="stat-posts">—</strong><small>게시 활동</small></article>
+      <article class="stat-card"><span>COMMENT EVENTS</span><strong id="stat-comments">—</strong><small>댓글 활동</small></article>
+      <article class="stat-card"><span>UNIQUE USERS</span><strong id="stat-users">—</strong><small>고유 식별자</small></article>
+      <article class="stat-card"><span>TOTAL VIEWS</span><strong id="stat-views">—</strong><small id="stat-range">집계 중</small></article>
+    </section>
+
+    <section class="data-panel">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">DATA EXPLORER</p>
+          <h2>레코드 탐색</h2>
+        </div>
+        <div class="segmented" role="tablist" aria-label="데이터 종류">
+          <button class="segment active" data-kind="posts" role="tab">게시 데이터</button>
+          <button class="segment" data-kind="comments" role="tab">댓글 활동</button>
+        </div>
+      </div>
+
+      <form id="filters" class="filters">
+        <label class="search-field">
+          <span>검색</span>
+          <input id="search" type="search" placeholder="닉네임 또는 식별자" autocomplete="off">
+        </label>
+        <label><span>시작일</span><input id="date-from" type="date"></label>
+        <label><span>종료일</span><input id="date-to" type="date"></label>
+        <button class="button button-primary" type="submit">조회하기</button>
+        <button class="button button-ghost" id="reset" type="button">초기화</button>
+      </form>
+
+      <section class="ranking-panel" aria-label="활동 순위">
+        <div class="ranking-header">
+          <div>
+            <p class="eyebrow">RANKING</p>
+            <h3>활동 순위</h3>
+          </div>
+          <p class="ranking-caption">기본값은 전체 기간의 서버 집계 결과이며, 날짜 범위를 지정하면 해당 구간 기준 순위로 바뀝니다.</p>
+        </div>
+        <div class="ranking-wrap">
+          <table class="ranking-table">
+            <thead>
+              <tr>
+                <th>순위</th>
+                <th>닉네임</th>
+                <th>식별자</th>
+                <th>게시</th>
+                <th>댓글</th>
+                <th>활동</th>
+                <th>조회</th>
+              </tr>
+            </thead>
+            <tbody id="ranking-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="table-meta">
+        <p><strong id="result-total">—</strong>개의 레코드</p>
+        <p id="page-status">데이터를 불러오는 중입니다.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead id="result-head"></thead>
+          <tbody id="result-body"></tbody>
+        </table>
+      </div>
+      <div id="empty-state" class="empty-state" hidden>조건에 맞는 데이터가 없습니다.</div>
+      <div class="pagination">
+        <button class="button button-ghost" id="prev" type="button">← 이전</button>
+        <span id="page-number">1 / 1</span>
+        <button class="button button-ghost" id="next" type="button">다음 →</button>
+      </div>
+    </section>
+  </main>
+
+  <footer><span>READERSEN DATASET</span><span>SQLite · local · read-only</span></footer>
+  <script src="/app.js" defer></script>
+</body>
+</html>

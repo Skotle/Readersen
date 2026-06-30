@@ -156,11 +156,19 @@ public class CustomAnalyzer {
         } catch (IOException e) { e.printStackTrace(); }
     }
     public void saveUserLog(ArrayList<String> names, ArrayList<String> userIDs, ArrayList<String> ips, List<String> days, String filename) {
-        System.out.println(names.size()+" "+userIDs.size()+" "+ips.size()+" "+days.size());
+        saveUserLog(names, userIDs, ips, days, null, null, null, filename);
+    }
+
+    public void saveUserLog(ArrayList<String> names, ArrayList<String> userIDs, ArrayList<String> ips, List<String> days,
+                            List<Integer> views, List<Integer> recoms, List<Integer> reples, String filename) {
         if (names == null || days == null || names.size() != days.size()) {
             System.out.println("데이터의 길이가 일치하지 않거나 비어있습니다.");
             return;
         }
+        System.out.println(names.size()+" "+(userIDs == null ? 0 : userIDs.size())+" "+
+                (ips == null ? 0 : ips.size())+" "+days.size());
+
+        boolean includePostStats = views != null || recoms != null || reples != null;
 
         ensureParentDirectory(filename);
         try (BufferedWriter writer = new BufferedWriter(new FileWriter(filename))) {
@@ -180,12 +188,23 @@ public class CustomAnalyzer {
 
                 // 4. 형식에 맞춰 쓰기: [이름] [ID/IP] [날짜]
                 writer.write(String.format("[%s] [%s] [%s]", cleanName, idOrIp, day));
+                if (includePostStats) {
+                    int view = valueAtOrZero(views, i);
+                    int recom = valueAtOrZero(recoms, i);
+                    int reple = valueAtOrZero(reples, i);
+                    writer.write(String.format(" [%d] [%d] [%d]", view, recom, reple));
+                }
                 writer.newLine();
             }
             System.out.println("로그 저장 완료: " + filename);
         } catch (IOException e) {
             e.printStackTrace();
         }
+    }
+
+    private int valueAtOrZero(List<Integer> values, int index) {
+        if (values == null || index >= values.size() || values.get(index) == null) return 0;
+        return values.get(index);
     }
 
     private void ensureParentDirectory(String filename) {

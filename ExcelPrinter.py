@@ -1,6 +1,12 @@
 import pandas as pd
 import re
 import os
+from datetime import datetime, timedelta
+
+DAILY_DATA_PATTERN = re.compile(
+    r"^\[(.*?)\]\s+\[(.*?)\]\s+\[(.*?)\]"
+    r"(?:\s+\[([^\]]*)\]\s+\[([^\]]*)\]\s+\[([^\]]*)\])?\s*$"
+)
 
 # --- Excel에서 문제되는 제어 문자 제거 ---
 def clean_illegal_chars(text):
@@ -9,19 +15,109 @@ def clean_illegal_chars(text):
         return re.sub(r'[\x00-\x1F\x7F]', '', text)
     return text
 
-file_path = "example.txt"
+def parse_daily_metric(value):
+    if value is None:
+        return None
+    value = re.sub(r"^(?:조회수|추천|리플)\s*:\s*", "", value.strip())
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+def load_daily_rows(path):
+    """3필드 구형 로그와 6필드 게시글 로그를 모두 읽는다."""
+    if not os.path.exists(path):
+        return []
+
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            match = DAILY_DATA_PATTERN.match(line.strip())
+            if not match:
+                continue
+            name, identifier, date, view, recom, reple = match.groups()
+            try:
+                parsed_date = datetime.strptime(date.strip(), "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                continue
+            rows.append({
+                "name": clean_illegal_chars(name),
+                "id_or_ip": clean_illegal_chars(identifier),
+                "date": parsed_date,
+                "view": parse_daily_metric(view),
+                "recom": parse_daily_metric(recom),
+                "reple": parse_daily_metric(reple),
+            })
+    return rows
+
+def read_date_range():
+    try:
+        start_text = input("포함 시작일 (YYYY-MM-DD, 전체는 Enter): ").strip()
+        end_text = input("포함 종료일 (YYYY-MM-DD, 전체는 Enter): ").strip()
+    except EOFError:
+        return None, None
+
+    try:
+        start = datetime.strptime(start_text, "%Y-%m-%d") if start_text else None
+        end = datetime.strptime(end_text, "%Y-%m-%d") + timedelta(days=1) if end_text else None
+    except ValueError:
+        raise SystemExit("❌ 날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식으로 입력하세요.")
+
+    if start and end and start >= end:
+        raise SystemExit("❌ 시작일은 종료일보다 늦을 수 없습니다.")
+    return start, end
+
+def filter_daily_rows(rows, start, end):
+    return [
+        row for row in rows
+        if (start is None or row["date"] >= start) and (end is None or row["date"] < end)
+    ]
+
+def aggregate_range_records(post_rows, comment_rows):
+    """선택 날짜 범위의 게시글/댓글 로그로 사용자 집계를 다시 계산한다."""
+    aggregated = {}
+
+    def get_record(row):
+        identifier = row["id_or_ip"]
+        if identifier not in aggregated:
+            aggregated[identifier] = {
+                "name": row["name"],
+                "id_or_ip": identifier,
+                "nicktype": "",
+                "num": 0, "view": 0, "recom": 0, "reple": 0, "comm": 0,
+            }
+        return aggregated[identifier]
+
+    for row in post_rows:
+        record = get_record(row)
+        record["num"] += 1
+        record["view"] += row["view"] or 0
+        record["recom"] += row["recom"] or 0
+        record["reple"] += row["reple"] or 0
+
+    for row in comment_rows:
+        get_record(row)["comm"] += 1
+
+    return sorted(aggregated.values(), key=lambda record: record["num"], reverse=True)
+
+def daily_posts_frame(post_rows):
+    return pd.DataFrame([
+        {
+            "이름": row["name"], "ID/IP": row["id_or_ip"], "날짜": row["date"],
+            "조회수": row["view"], "추천": row["recom"], "리플": row["reple"],
+        }
+        for row in post_rows
+    ], columns=["이름", "ID/IP", "날짜", "조회수", "추천", "리플"])
+
 black_list_file = "ip-black.txt"
 
-# 1. 파일 로드
-if not os.path.exists(file_path):
-    print(f"❌ {file_path} 없음 - 프로그램을 종료합니다.")
-    exit()
+start_date, end_date = read_date_range()
+post_rows = filter_daily_rows(load_daily_rows("daily-data.txt"), start_date, end_date)
+comment_rows = filter_daily_rows(load_daily_rows("daily-data-comment.txt"), start_date, end_date)
+records = aggregate_range_records(post_rows, comment_rows)
 
-with open(file_path, "r", encoding="utf-8") as f:
-    lines = f.read().splitlines()
-
-if len(lines) < 2:
-    print("❌ 데이터가 부족합니다.")
+if not records:
+    print("❌ 선택한 날짜 범위에 데이터가 없습니다.")
     exit()
 
 # ============================================================
@@ -43,22 +139,16 @@ sum_reco = 0
 sum_reply = 0
 sum_comment = 0
 
-for line in lines[1:]:
-    parts = [clean_illegal_chars(x) for x in line.split('SPLIT')]
-    # 자바 출력 형식: 이름(0), ID/IP(1), 타입(2), 글(3), 조회(4), 추천(5), 리플(6), 댓글(7)
-    if len(parts) < 8: continue
+for record in records:
+    sum_posts   += record["num"]
+    sum_view    += record["view"]
+    sum_reco    += record["recom"]
+    sum_reply   += record["reple"]
+    sum_comment += record["comm"]
 
-    # 숫자형 변환 (인덱스 3번부터 7번까지)
-    for i in range(3, 8):
-        parts[i] = int(parts[i]) if str(parts[i]).isdigit() and parts[i] else 0
-
-    sum_posts   += parts[3]
-    sum_view    += parts[4]
-    sum_reco    += parts[5]
-    sum_reply   += parts[6]
-    sum_comment += parts[7]
-
-print("\n===== 📊 전체 집계 현황 (필터링 전) =====")
+start_label = start_date.strftime("%Y-%m-%d") if start_date else "제한 없음"
+end_label = (end_date - timedelta(days=1)).strftime("%Y-%m-%d") if end_date else "제한 없음"
+print(f"\n===== 📊 일간 데이터 집계 ({start_label} ~ {end_label}) =====")
 print(f"총 게시글 수  = {sum_posts}")
 print(f"총 조회수     = {sum_view}")
 print(f"총 추천수     = {sum_reco}")
@@ -71,17 +161,16 @@ print(f"총 댓글수     = {sum_comment}")
 # ============================================================
 rows = []
 
-for line in lines[1:]:
-    parts = [clean_illegal_chars(x) for x in line.split('SPLIT')]
-    if len(parts) < 8: continue
+for record in records:
+    parts = [
+        record["name"], record["id_or_ip"], record["nicktype"],
+        record["num"], record["view"], record["recom"],
+        record["reple"], record["comm"],
+    ]
 
     # 블랙리스트 필터링 (ID/IP 기준)
     if any(v in parts[1] for v in filter_values):
         continue
-
-    # 숫자 데이터 정수화
-    for i in range(3, 8):
-        parts[i] = int(parts[i]) if str(parts[i]).isdigit() and parts[i] else 0
 
     # 평균치 계산 (parts[3] = 글 수)
     if parts[3] > 0:
@@ -130,7 +219,13 @@ df_final = df[[
 
 # 파일 저장
 try:
-    df_final.to_excel("user-data.xlsx", index=False, engine='openpyxl')
+    daily_posts = daily_posts_frame(post_rows)
+    with pd.ExcelWriter(
+        "user-data.xlsx", engine='openpyxl', datetime_format="yyyy-mm-dd hh:mm:ss"
+    ) as writer:
+        df_final.to_excel(writer, sheet_name="사용자 집계", index=False, freeze_panes=(1, 0))
+        if not daily_posts.empty:
+            daily_posts.to_excel(writer, sheet_name="게시글 상세", index=False, freeze_panes=(1, 0))
     df_final.to_csv("user-data.csv", index=False, encoding="utf-8-sig")
     print("\n✅ user-data.xlsx / user-data.csv 저장 완료!")
 except Exception as e:

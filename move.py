@@ -25,6 +25,10 @@ COMMENT_WEIGHT = 0.18
 MAX_TOP_N = 28
 LOW_PERIOD_AVERAGE_RATIO = 0.05
 ILLEGAL_EXCEL_CHAR_RE = re.compile(r'[\x00-\x08\x0B-\x0C\x0E-\x1F]')
+DAILY_DATA_PATTERN = re.compile(
+    r"^\[(?P<nick>.*?)\]\s+\[(?P<uid>.*?)\]\s+\[(?P<date>.*?)\]"
+    r"(?:\s+\[(?P<view>[^\]]*)\]\s+\[(?P<recom>[^\]]*)\]\s+\[(?P<reple>[^\]]*)\])?\s*$"
+)
 
 # === 블랙리스트 설정 ===
 BLACK_LIST = ["운영자", "테스트계정"] 
@@ -84,6 +88,30 @@ def clean_excel_frame(df):
 def safe_to_excel(df, writer, **kwargs):
     clean_excel_frame(df).to_excel(writer, **kwargs)
 
+def parse_daily_metric(value):
+    if value is None:
+        return 0
+    value = re.sub(r"^(?:조회수|추천|리플)\s*:\s*", "", value.strip())
+    try:
+        return int(value)
+    except ValueError:
+        return 0
+
+def parse_daily_line(line, pattern=DAILY_DATA_PATTERN):
+    """구형 3필드와 신규 6필드 daily-data 행을 모두 파싱한다."""
+    match = pattern.match(line.strip())
+    if not match:
+        return None
+    values = match.groupdict()
+    return {
+        'nick': clean_excel_text(values['nick']),
+        'uid': clean_excel_text(values['uid']),
+        'date': values['date'],
+        'Views': parse_daily_metric(values.get('view')),
+        'Recommendations': parse_daily_metric(values.get('recom')),
+        'Replies': parse_daily_metric(values.get('reple')),
+    }
+
 def build_mapping(files, pattern):
     id_to_nick = {}
     nick_usage = {}
@@ -93,11 +121,9 @@ def build_mapping(files, pattern):
                 lines = f.readlines()
         except FileNotFoundError: continue
         for line in lines:
-            match = pattern.search(line)
-            if match:
-                nick, uid, _ = match.groups()
-                nick = clean_excel_text(nick)
-                uid = clean_excel_text(uid)
+            entry = parse_daily_line(line, pattern)
+            if entry:
+                nick, uid = entry['nick'], entry['uid']
                 if uid not in id_to_nick:
                     id_to_nick[uid] = nick
                     nick_usage[nick] = nick_usage.get(nick, 0) + 1
@@ -113,7 +139,8 @@ def build_mapping(files, pattern):
             final_mapping[uid] = f"{nick}({display_uid})"
     return final_mapping
 
-def load_file(file_path, weight, pattern, final_mapping, blacklisted_periods, now, mode, start_date="", end_date=""):
+def load_file(file_path, weight, pattern, final_mapping, blacklisted_periods, now, mode,
+              start_date="", end_date="", is_post=False):
     raw_data = []
     s_dt = datetime.strptime(start_date, "%Y-%m-%d") if start_date else None
     e_dt = datetime.strptime(end_date, "%Y-%m-%d") if end_date else None
@@ -123,10 +150,9 @@ def load_file(file_path, weight, pattern, final_mapping, blacklisted_periods, no
     except FileNotFoundError: return raw_data
 
     for line in lines:
-        match = pattern.search(line)
-        if match:
-            _, uid, date_str = match.groups()
-            uid = clean_excel_text(uid)
+        entry = parse_daily_line(line, pattern)
+        if entry:
+            uid, date_str = entry['uid'], entry['date']
             try:
                 dt = datetime.strptime(date_str.strip(), "%Y-%m-%d %H:%M:%S")
                 p_month = dt.strftime("%Y-%m")
@@ -142,20 +168,27 @@ def load_file(file_path, weight, pattern, final_mapping, blacklisted_periods, no
                 raw_data.append({
                     'Period': p,
                     'User':   final_mapping.get(uid, "Unknown"),
-                    'Weight': weight
+                    'Weight': weight,
+                    'Posts': 1 if is_post else 0,
+                    'Comments': 0 if is_post else 1,
+                    'Views': entry['Views'] if is_post else 0,
+                    'Recommendations': entry['Recommendations'] if is_post else 0,
+                    'Replies': entry['Replies'] if is_post else 0,
                 })
             except ValueError: continue
     return raw_data
 
 def save_final_clean_report(post_file, comment_file, mode='D', graph_type='B', top_n=10, bar_style='G', start_date="", end_date="", black=[]):
-    pattern = re.compile(r"\[(.+?)\]\s\[(.+?)\]\s\[(.+?)\]")
+    pattern = DAILY_DATA_PATTERN
     now = datetime.now()
     blacklisted_periods = []
 
     final_mapping = build_mapping([post_file, comment_file], pattern)
     raw_data = (
-        load_file(post_file,    POST_WEIGHT,    pattern, final_mapping, blacklisted_periods, now, mode, start_date, end_date) +
-        load_file(comment_file, COMMENT_WEIGHT, pattern, final_mapping, blacklisted_periods, now, mode, start_date, end_date)
+        load_file(post_file, POST_WEIGHT, pattern, final_mapping, blacklisted_periods, now,
+                  mode, start_date, end_date, is_post=True) +
+        load_file(comment_file, COMMENT_WEIGHT, pattern, final_mapping, blacklisted_periods, now,
+                  mode, start_date, end_date, is_post=False)
     )
 
     if not raw_data:
@@ -196,8 +229,18 @@ def save_final_clean_report(post_file, comment_file, mode='D', graph_type='B', t
         'User': selected_users,
         'FinalCumulativeScore': [cumulative_scores.iloc[-1].get(user, 0) for user in selected_users]
     })
+    metric_columns = ['Posts', 'Comments', 'Views', 'Recommendations', 'Replies']
+    user_metrics = df.groupby('User')[metric_columns].sum()
+    for column in metric_columns:
+        selected_user_summary[column] = [user_metrics.at[user, column] if user in user_metrics.index else 0 for user in selected_users]
+    period_user_metrics = (
+        df[df['User'].isin(selected_users)]
+        .groupby(['Period', 'User'], as_index=False)[metric_columns]
+        .sum()
+    )
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         safe_to_excel(selected_user_summary, writer, sheet_name='selected_users', index=False)
+        safe_to_excel(period_user_metrics, writer, sheet_name='period_user_metrics', index=False)
         safe_to_excel(cumulative_plot_data, writer, sheet_name='cumulative_selected')
         safe_to_excel(aggregate_plot_data, writer, sheet_name='period_top_n_only')
         safe_to_excel(cumulative_scores, writer, sheet_name='cumulative_all')
@@ -473,16 +516,12 @@ def save_grouped_aggregate_chart(pivot_df, top_users, mode, top_n):
     plt.show()
 
 # 실행
-selected_mode, selected_graph_type, selected_top_n, selected_bar_style, selected_start, selected_end = ask_options()
-save_final_clean_report(
-    'daily-data.txt',
-    'daily-data-comment.txt',
-    mode=selected_mode,
-    graph_type=selected_graph_type,
-    top_n=selected_top_n,
-    bar_style=selected_bar_style,
-    start_date=selected_start,
-    end_date=selected_end,
-    black=BLACK_LIST
-)
+if __name__ == "__main__":
+    selected_mode, selected_graph_type, selected_top_n, selected_bar_style, selected_start, selected_end = ask_options()
+    save_final_clean_report(
+        'daily-data.txt', 'daily-data-comment.txt',
+        mode=selected_mode, graph_type=selected_graph_type, top_n=selected_top_n,
+        bar_style=selected_bar_style, start_date=selected_start, end_date=selected_end,
+        black=BLACK_LIST
+    )
 
